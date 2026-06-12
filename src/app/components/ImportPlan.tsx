@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { Upload, AlertCircle, CheckCircle2 } from "lucide-react";
-import type { Plan } from "../types";
+import type { PlanVersion } from "../types";
+import { normalizeImportedPlan } from "../utils/plan";
+import { parseNaturalLanguagePlan } from "../utils/nlImport";
 
 const SAMPLE_PLAN = `{
   "plan_name": "12周体能恢复计划",
   "start_date": "2026-06-15",
+  "end_date": "2026-09-07",
+  "ai_summary": "改善睡眠，恢复手腕，提升体能",
   "tasks": [
     {
       "id": "t1",
@@ -42,12 +46,30 @@ const SAMPLE_PLAN = `{
   ]
 }`;
 
+const SAMPLE_NL = `12周恢复计划
+开始日期：2026-06-15
+
+周二训练：
+深蹲3组10次
+臀桥3组12次
+Dead Bug 3组8次
+
+周四训练：
+俯卧撑3组8次
+平板支撑3组30秒
+
+每日习惯：
+散步20分钟
+22:30准备睡觉`;
+
 interface ImportPlanProps {
-  onImport: (plan: Plan) => void;
-  currentPlan: Plan | null;
+  onImport: (plan: PlanVersion) => void;
+  currentPlan: PlanVersion | null;
+  existingVersions: PlanVersion[];
 }
 
-export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
+export function ImportPlan({ onImport, currentPlan, existingVersions }: ImportPlanProps) {
+  const [mode, setMode] = useState<"json" | "natural">("json");
   const [text, setText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -56,18 +78,24 @@ export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
     setError(null);
     setSuccess(false);
     try {
-      const data = JSON.parse(text);
-      if (!data.plan_name || !data.tasks) throw new Error("缺少 plan_name 或 tasks 字段");
-      onImport(data as Plan);
+      let raw: Record<string, unknown>;
+      if (mode === "json") {
+        raw = JSON.parse(text) as Record<string, unknown>;
+        if (!raw.plan_name || !raw.tasks) throw new Error("缺少 plan_name 或 tasks 字段");
+      } else {
+        raw = parseNaturalLanguagePlan(text) as unknown as Record<string, unknown>;
+      }
+      const version = normalizeImportedPlan(raw, existingVersions);
+      onImport(version);
       setSuccess(true);
       setText("");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "JSON 格式错误");
+      setError(e instanceof Error ? e.message : "格式错误");
     }
   }
 
   function loadSample() {
-    setText(SAMPLE_PLAN);
+    setText(mode === "json" ? SAMPLE_PLAN : SAMPLE_NL);
     setError(null);
     setSuccess(false);
   }
@@ -77,7 +105,7 @@ export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
       <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <h2 className="mb-1" style={{ color: "var(--foreground)" }}>导入训练计划</h2>
         <p style={{ fontSize: 13, color: "var(--muted-foreground)" }}>
-          将 AI 生成的 JSON 计划粘贴到下方
+          支持 JSON 或自然语言导入，自动创建新版本
         </p>
       </div>
 
@@ -85,24 +113,46 @@ export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
         <div className="rounded-2xl p-4 flex items-start gap-3" style={{ background: "#1a2a1a", border: "1px solid rgba(74,222,128,0.2)" }}>
           <CheckCircle2 size={18} color="#4ade80" className="mt-0.5" />
           <div>
-            <p style={{ fontSize: 13, color: "#4ade80", fontWeight: 600 }}>当前计划：{currentPlan.plan_name}</p>
-            <p style={{ fontSize: 12, color: "#666" }}>开始日期 {currentPlan.start_date} · {currentPlan.tasks.length} 个任务</p>
+            <p style={{ fontSize: 13, color: "#4ade80", fontWeight: 600 }}>
+              当前计划：{currentPlan.plan_name} V{currentPlan.version}
+            </p>
+            <p style={{ fontSize: 12, color: "#666" }}>
+              开始日期 {currentPlan.start_date} · {currentPlan.tasks.length} 个任务
+            </p>
           </div>
         </div>
       )}
+
+      <div className="flex rounded-2xl p-1 gap-1" style={{ background: "var(--secondary)" }}>
+        {(["json", "natural"] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => { setMode(m); setError(null); setSuccess(false); }}
+            className="flex-1 rounded-xl py-2 transition-all"
+            style={{
+              background: mode === m ? "var(--primary)" : "transparent",
+              color: mode === m ? "var(--primary-foreground)" : "var(--muted-foreground)",
+              fontSize: 13,
+              fontWeight: mode === m ? 600 : 400,
+            }}
+          >
+            {m === "json" ? "JSON" : "自然语言"}
+          </button>
+        ))}
+      </div>
 
       <div className="space-y-2">
         <textarea
           value={text}
           onChange={(e) => { setText(e.target.value); setError(null); setSuccess(false); }}
-          placeholder="粘贴 JSON 计划..."
+          placeholder={mode === "json" ? "粘贴 JSON 计划..." : "粘贴自然语言计划，例如：\n周二训练：\n深蹲3组10次\n臀桥3组12次"}
           rows={12}
           className="w-full rounded-2xl p-4 resize-none outline-none"
           style={{
             background: "var(--input-background)",
             color: "var(--foreground)",
             border: "1px solid var(--border)",
-            fontFamily: "'DM Mono', monospace",
+            fontFamily: mode === "json" ? "'DM Mono', monospace" : "inherit",
             fontSize: 12,
             lineHeight: 1.6,
           }}
@@ -116,7 +166,7 @@ export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
         {success && (
           <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ background: "#1a2a1a", border: "1px solid rgba(74,222,128,0.3)" }}>
             <CheckCircle2 size={14} color="#4ade80" />
-            <span style={{ fontSize: 12, color: "#4ade80" }}>计划导入成功！</span>
+            <span style={{ fontSize: 12, color: "#4ade80" }}>计划导入成功！已创建新版本</span>
           </div>
         )}
       </div>
@@ -142,7 +192,7 @@ export function ImportPlan({ onImport, currentPlan }: ImportPlanProps) {
 
       <div className="rounded-2xl p-4" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
         <p style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.7 }}>
-          💡 <strong style={{ color: "var(--foreground)" }}>使用方法：</strong> 将 ChatGPT / Claude 生成的训练计划转为 JSON 格式后粘贴到此处，App 将自动解析并创建今日任务和提醒。
+          💡 每次导入将自动递增版本号（V1 → V2 → V3），保留历史记录供对比与回溯。
         </p>
       </div>
     </div>

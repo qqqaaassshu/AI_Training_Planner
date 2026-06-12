@@ -1,21 +1,17 @@
 import { useState } from "react";
-import { CheckCircle2, Circle, ChevronDown, ChevronUp, Clock, SkipForward, Bell } from "lucide-react";
-import type { Plan, PlanTask, ExecutionRecord, ActualExercise } from "../types";
+import { CheckCircle2, Circle, ChevronDown, ChevronUp, Clock, SkipForward, Bell, ArrowLeft } from "lucide-react";
+import type { PlanVersion, PlanTask, ExecutionRecord, ActualExercise } from "../types";
+import { isTaskToday } from "../utils/plan";
+import { ScoreSlider } from "./ScoreSlider";
 
 interface TodayViewProps {
-  plan: Plan | null;
+  plan: PlanVersion | null;
   records: ExecutionRecord[];
+  dailyFatigue: number | undefined;
+  onDailyFatigueChange: (score: number) => void;
   onRecord: (record: Omit<ExecutionRecord, "id">) => void;
   onTriggerNotification: (task: PlanTask) => void;
-}
-
-function isTaskToday(task: PlanTask): boolean {
-  if (task.schedule.daily) return true;
-  if (task.schedule.weekday) {
-    const day = new Date().getDay();
-    return task.schedule.weekday.includes(day);
-  }
-  return false;
+  onBack?: () => void;
 }
 
 function getRecordForTask(taskId: string, records: ExecutionRecord[]): ExecutionRecord | undefined {
@@ -84,6 +80,7 @@ interface TaskCardProps {
 function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [notes, setNotes] = useState("");
+  const [painScore, setPainScore] = useState<number | undefined>(undefined);
   const [actual, setActual] = useState<ActualExercise[]>(
     task.exercises?.map((e) => ({ name: e.name, sets: e.sets, reps: e.reps })) ?? []
   );
@@ -100,7 +97,9 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
       completed_at: new Date().toISOString(),
       actual: task.exercises ? actual : undefined,
       notes: notes,
+      pain_score: status === "completed" ? painScore : undefined,
     });
+    setExpanded(false);
   }
 
   return (
@@ -116,7 +115,7 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 flex-1 min-w-0">
             <button
-              onClick={() => !isDone && !isSkipped && submit("completed")}
+              onClick={() => !isDone && !isSkipped && setExpanded(true)}
               className="mt-0.5 flex-shrink-0"
             >
               {isDone ? (
@@ -158,6 +157,15 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
                 {expanded ? <ChevronUp size={14} color="var(--muted-foreground)" /> : <ChevronDown size={14} color="var(--muted-foreground)" />}
               </button>
             )}
+            {!record && !expanded && (
+              <button
+                onClick={() => setExpanded(true)}
+                className="rounded-xl px-2 py-1"
+                style={{ background: "var(--secondary)", fontSize: 11, color: "var(--muted-foreground)" }}
+              >
+                完成
+              </button>
+            )}
           </div>
         </div>
 
@@ -174,6 +182,12 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
           </div>
         )}
 
+        {record?.pain_score !== undefined && (
+          <p className="mt-2" style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+            疼痛评分：{record.pain_score}/10
+          </p>
+        )}
+
         {record?.notes && (
           <p className="mt-2 rounded-xl px-3 py-2" style={{ background: "var(--secondary)", fontSize: 12, color: "var(--muted-foreground)" }}>
             📝 {record.notes}
@@ -187,10 +201,19 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
             <ExerciseLog exercises={task.exercises} actual={actual} onChange={setActual} />
           )}
 
+          <ScoreSlider
+            label="疼痛程度 (0-10)"
+            value={painScore}
+            onChange={setPainScore}
+            hint="完成后记录当前疼痛感受"
+            minLabel="无痛"
+            maxLabel="剧痛"
+          />
+
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="添加备注（疲劳、疼痛、状态…）"
+            placeholder="添加备注（状态、感受…）"
             rows={2}
             className="w-full rounded-xl p-3 resize-none outline-none"
             style={{
@@ -233,7 +256,15 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
   );
 }
 
-export function TodayView({ plan, records, onRecord, onTriggerNotification }: TodayViewProps) {
+export function TodayView({
+  plan,
+  records,
+  dailyFatigue,
+  onDailyFatigueChange,
+  onRecord,
+  onTriggerNotification,
+  onBack,
+}: TodayViewProps) {
   if (!plan) {
     return (
       <div className="flex flex-col items-center justify-center py-20 space-y-4">
@@ -246,10 +277,10 @@ export function TodayView({ plan, records, onRecord, onTriggerNotification }: To
     );
   }
 
-  const todayTasks = plan.tasks.filter(isTaskToday);
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTasks = plan.tasks.filter((t) => isTaskToday(t, today));
   const workouts = todayTasks.filter((t) => t.type === "workout");
   const habits = todayTasks.filter((t) => t.type === "habit");
-  const today = new Date().toISOString().slice(0, 10);
   const completedCount = todayTasks.filter((t) => {
     const r = getRecordForTask(t.id, records);
     return r?.status === "completed";
@@ -259,7 +290,17 @@ export function TodayView({ plan, records, onRecord, onTriggerNotification }: To
 
   return (
     <div className="space-y-5">
-      {/* Header */}
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="flex items-center gap-1"
+          style={{ fontSize: 13, color: "var(--muted-foreground)" }}
+        >
+          <ArrowLeft size={14} />
+          返回首页
+        </button>
+      )}
+
       <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{dateStr}</p>
         <div className="flex items-end justify-between mt-1">
@@ -273,7 +314,6 @@ export function TodayView({ plan, records, onRecord, onTriggerNotification }: To
             </span>
           </div>
         </div>
-        {/* Progress bar */}
         <div className="mt-3 rounded-full overflow-hidden h-1.5" style={{ background: "var(--secondary)" }}>
           <div
             className="h-full rounded-full transition-all"
@@ -283,6 +323,17 @@ export function TodayView({ plan, records, onRecord, onTriggerNotification }: To
             }}
           />
         </div>
+      </div>
+
+      <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
+        <ScoreSlider
+          label="今日疲劳 (0-10)"
+          value={dailyFatigue}
+          onChange={onDailyFatigueChange}
+          hint="记录今天的整体疲劳感受"
+          minLabel="精力充沛"
+          maxLabel="极度疲劳"
+        />
       </div>
 
       {workouts.length > 0 && (

@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { CheckCircle2, SkipForward, Clock, Pencil, Plus, Trash2, Check, X } from "lucide-react";
-import type { Plan, ExecutionRecord, ActualExercise } from "../types";
+import type { PlanVersion, ExecutionRecord, ActualExercise, DailyWellness } from "../types";
 
 interface HistoryViewProps {
-  plan: Plan | null;
+  plan: PlanVersion | null;
   records: ExecutionRecord[];
+  dailyWellness: DailyWellness[];
   onUpdateRecord: (id: string, patch: Partial<ExecutionRecord>) => void;
   onDeleteRecord: (id: string) => void;
 }
@@ -171,7 +172,7 @@ function RecordDetailEditor({ record, taskTitle, plannedExercises, onSave, onClo
   );
 }
 
-export function HistoryView({ plan, records, onUpdateRecord, onDeleteRecord }: HistoryViewProps) {
+export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDeleteRecord }: HistoryViewProps) {
   const [editingRecord, setEditingRecord] = useState<ExecutionRecord | null>(null);
   const todayStr = new Date().toISOString().slice(0, 10);
 
@@ -222,9 +223,16 @@ export function HistoryView({ plan, records, onUpdateRecord, onDeleteRecord }: H
         {/* Timeline */}
         {dates.map((date) => (
           <div key={date} className="space-y-2">
-            <p style={{ fontSize: 12, color: "var(--muted-foreground)", paddingLeft: 4 }}>
-              {new Date(date).toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}
-            </p>
+            <div className="flex items-center justify-between px-1">
+              <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+                {new Date(date).toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}
+              </p>
+              {dailyWellness.find((d) => d.date === date) && (
+                <p style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
+                  疲劳 {dailyWellness.find((d) => d.date === date)!.fatigue_score}/10
+                </p>
+              )}
+            </div>
             {byDate[date].map((r) => {
               const task = getTask(r.task_id);
               const taskTitle = task?.title ?? r.task_id;
@@ -258,6 +266,12 @@ export function HistoryView({ plan, records, onUpdateRecord, onDeleteRecord }: H
                             <Plus size={11} color="var(--primary)" />
                             <span style={{ fontSize: 11, color: "var(--primary)" }}>填写实际动作</span>
                           </button>
+                        )}
+
+                        {r.pain_score !== undefined && (
+                          <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>
+                            疼痛 {r.pain_score}/10
+                          </p>
                         )}
 
                         {r.notes && (
