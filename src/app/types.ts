@@ -125,6 +125,37 @@ export interface DailyWellness {
   updated_at: string;
 }
 
+/** 个人档案：写入 AI 系统提示词，帮助生成个性化建议 */
+export interface UserProfile {
+  /** 年龄段，如 "30-39" */
+  age_range?: string;
+  sex?: "male" | "female" | "other";
+  height_cm?: number;
+  weight_kg?: number;
+  experience?: "none" | "beginner" | "intermediate" | "advanced";
+  /** 伤病与身体限制 */
+  injuries?: string;
+  /** 可训练的时间 */
+  available_time?: string;
+  /** 可用器械 */
+  equipment?: string;
+  /** 目标 */
+  goals?: string;
+  /** 其他偏好（喜欢/不喜欢的动作等） */
+  preferences?: string;
+  updated_at?: string;
+}
+
+export type ProfileField = Exclude<keyof UserProfile, "updated_at">;
+
+/** 档案变更记录，用于让 AI 看到状态变化趋势 */
+export interface ProfileChange {
+  at: string;
+  field: ProfileField;
+  from?: string | number;
+  to?: string | number;
+}
+
 export type AnalysisKind = "session_feedback" | "weekly_review" | "plan_adjustment" | "alert";
 export type FindingLevel = "info" | "warn" | "risk";
 
@@ -152,6 +183,10 @@ export interface AIAnalysis extends AIAnalysisOutput {
   provider?: string;
   model?: string;
   status: "new" | "accepted" | "rejected";
+  /** 生成时使用的提示词版本 */
+  prompt_version?: number;
+  /** 用户为本次分析填写的补充说明 */
+  user_note?: string;
 }
 
 /** 接口格式：决定请求如何发送 */

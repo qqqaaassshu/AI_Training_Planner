@@ -108,3 +108,71 @@ describe("parseAnalysisReply", () => {
     expect(bad.ok).toBe(false);
   });
 });
+
+import { buildPlanHistory, buildPrompt, PROMPT_VERSION } from "../analysis";
+
+describe("历史与档案进入提示词", () => {
+  const v1 = { ...plan, created_at: "2026-06-14T12:00:00" };
+  const v2Input = validatePlanInput({
+    ...samplePlan,
+    tasks: samplePlan.tasks.map((t) =>
+      t.id === "t1" ? { ...t, exercises: t.exercises!.map((e) => (e.id === "e1" ? { ...e, sets: 4 } : e)) } : t
+    ),
+    change_note: "深蹲加到 4 组",
+  });
+  if (!v2Input.ok) throw new Error();
+  const v2 = { ...createPlanVersion(v2Input.value, [v1], { source: "ai_analysis", parent: v1 }), created_at: "2026-06-22T12:00:00" };
+
+  it("plan_history：每个版本的变化与使用期间效果", () => {
+    const records = [
+      rec("2026-06-15", "completed", { task_id: "t1" }),
+      rec("2026-06-22", "completed", { task_id: "t1", pain_score: 6 }),
+    ];
+    const h = buildPlanHistory([v1, v2], records, [], "2026-06-24");
+    expect(h).toHaveLength(2);
+    expect(h[0]).toMatchObject({ version: 1, active: { from: "2026-06-15", to: "2026-06-21" }, changes: [] });
+    expect(h[1].version).toBe(2);
+    expect(h[1].change_note).toBe("深蹲加到 4 组");
+    expect(h[1].changes).toEqual(["身体维护训练A · 深蹲：3×10 → 4×10"]);
+    expect(h[1].active).toEqual({ from: "2026-06-22", to: "2026-06-24" });
+    expect(h[1].outcome.pain_max).toBe(6);
+  });
+
+  it("档案在系统提示词，补充说明与变更在用户消息；档案不重复放进数据", () => {
+    const input = buildAnalysisInput({
+      kind: "weekly_review",
+      plan: v2,
+      versions: [v1, v2],
+      records: [],
+      dailyWellness: [],
+      today: "2026-06-24",
+      profile: { injuries: "右手腕恢复中", available_time: "工作日晚上 20 分钟" },
+      profileHistory: [{ at: "2026-06-20T08:00:00", field: "weight_kg", from: 72, to: 71 }],
+      userNote: "下周出差",
+    });
+    const { system, user } = buildPrompt(input);
+    expect(system).toContain("伤病与身体限制：右手腕恢复中");
+    expect(system).toContain("可训练时间：工作日晚上 20 分钟");
+    expect(system).toContain("plan_history");
+    expect(user).toContain("本次补充说明（用户填写，优先考虑）：下周出差");
+    expect(user).toContain('"to": "71kg"');
+    expect(user).toContain('"plan_history"');
+    expect(user).not.toContain("右手腕恢复中");
+  });
+
+  it("系统提示词只随档案变化（便于缓存）", () => {
+    const base = { kind: "weekly_review" as const, plan: v2, versions: [v1, v2], dailyWellness: [], profile: { goals: "睡好" } };
+    const a = buildPrompt(buildAnalysisInput({ ...base, records: [], today: "2026-06-24" }));
+    const b = buildPrompt(buildAnalysisInput({ ...base, records: [rec("2026-06-23", "skipped")], today: "2026-06-25", userNote: "x" }));
+    expect(a.system).toBe(b.system);
+    expect(a.user).not.toBe(b.user);
+  });
+
+  it("分析记录带提示词版本与补充说明", () => {
+    const a = createAnalysis({ summary: "s", findings: [] }, {
+      kind: "weekly_review", channel: "api", plan_version_id: "p", range: { from: "a", to: "b" }, user_note: "下周出差",
+    });
+    expect(a.prompt_version).toBe(PROMPT_VERSION);
+    expect(a.user_note).toBe("下周出差");
+  });
+});

@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Copy, KeyRound, Loader2, Sparkles, Square } from "lucide-react";
-import type { AIAnalysis, AISettings, AnalysisKind, DailyWellness, ExecutionRecord, PlanVersion } from "../types";
+import type { AIAnalysis, AISettings, AnalysisKind, DailyWellness, ExecutionRecord, PlanVersion, ProfileChange, UserProfile } from "../types";
+import { isProfileEmpty } from "../utils/profile";
 import {
   ANALYSIS_KIND_LABEL,
   buildAnalysisInput,
@@ -25,6 +26,9 @@ interface AIViewProps {
   dailyWellness: DailyWellness[];
   today: string;
   analyses: AIAnalysis[];
+  profile: UserProfile;
+  profileHistory: ProfileChange[];
+  onOpenProfile: () => void;
   settings: AISettings;
   apiKeys: Record<string, string>;
   onSettingsChange: (s: AISettings) => void;
@@ -113,6 +117,9 @@ function AnalyzePanel({
   dailyWellness,
   today,
   analyses,
+  profile,
+  profileHistory,
+  onOpenProfile,
   settings,
   apiKeys,
   onSettingsChange,
@@ -123,6 +130,7 @@ function AnalyzePanel({
 }: AIViewProps & { onOpenSettings: () => void }) {
   const [kind, setKind] = useState<AnalysisKind>("weekly_review");
   const [includeNotes, setIncludeNotes] = useState(false);
+  const [userNote, setUserNote] = useState("");
   const [running, setRunning] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [pasted, setPasted] = useState("");
@@ -144,7 +152,8 @@ function AnalyzePanel({
     );
   }
 
-  const input = () => buildAnalysisInput({ kind, plan, versions, records, dailyWellness, today, range, includeNotes });
+  const input = () =>
+    buildAnalysisInput({ kind, plan, versions, records, dailyWellness, today, range, includeNotes, profile, profileHistory, userNote });
 
   async function runApi() {
     if (!plan || !service) return;
@@ -178,7 +187,7 @@ function AnalyzePanel({
       setErrors(parsed.errors);
       return;
     }
-    onAddAnalysis(createAnalysis(parsed.value, { kind, channel: "manual_import", plan_version_id: plan.id, range }));
+    onAddAnalysis(createAnalysis(parsed.value, { kind, channel: "manual_import", plan_version_id: plan.id, range, user_note: userNote.trim() || undefined }));
     setPasted("");
   }
 
@@ -212,6 +221,23 @@ function AnalyzePanel({
           数据范围：{range.from} ~ {range.to}
           {kind === "plan_adjustment" ? " · 将生成下一版计划草稿，需你确认后才生效" : ""}
         </p>
+        {isProfileEmpty(profile) && (
+          <button
+            onClick={onOpenProfile}
+            className="w-full rounded-xl px-3 py-2 text-left"
+            style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.3)", fontSize: 12, color: "#f5c46b", lineHeight: 1.6 }}
+          >
+            还没有填写个人档案（伤病、可用时间、器械等），AI 只能按保守的通用方案建议。点此填写 →
+          </button>
+        )}
+        <textarea
+          value={userNote}
+          onChange={(e) => setUserNote(e.target.value)}
+          placeholder="补充说明（可选）：例如 下周出差只能做徒手动作；最近睡眠差"
+          rows={2}
+          className="w-full rounded-xl p-3 resize-none outline-none"
+          style={{ ...fieldStyle, fontSize: 12, lineHeight: 1.6 }}
+        />
         <label className="flex items-center gap-2" style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
           <input type="checkbox" checked={includeNotes} onChange={(e) => setIncludeNotes(e.target.checked)} />
           包含文字备注（默认只发送统计数据）
@@ -243,7 +269,7 @@ function AnalyzePanel({
           ) : (
             <div className="rounded-xl p-3 space-y-2" style={{ background: "var(--secondary)" }}>
               <p style={{ fontSize: 12, color: "var(--foreground)", lineHeight: 1.6 }}>
-                分析时会把当前计划、所选范围内的执行统计、疼痛与疲劳评分发送给 {service!.name}
+                分析时会把个人档案及其变更、当前计划与历次调整、所选范围内的执行统计、疼痛与疲劳评分发送给 {service!.name}
                 {includeNotes ? "（含文字备注）" : "（不含文字备注）"}。数据仅用于本次分析。
               </p>
               <button

@@ -11,12 +11,15 @@ import type {
   ExecutionRecord,
   Finding,
   PlanVersion,
+  ProfileChange,
+  UserProfile,
 } from "../types";
 import { SCHEMA_VERSION } from "../types";
 import planSchema from "../schema/plan.schema.json";
 import analysisSchema from "../schema/ai-analysis.schema.json";
-import { addDays } from "./date";
-import { buildExportSummary, getCurrentWeek, getTotalWeeks, summarizeSets } from "./plan";
+import { addDays, toDateStr } from "./date";
+import { buildExportSummary, comparePlanVersions, getCurrentWeek, getTotalWeeks, summarizeSets } from "./plan";
+import { displayValue, formatProfileForPrompt, PROFILE_FIELDS } from "./profile";
 import { newId } from "./id";
 import { extractJSON, validateAIAnalysisOutput, type ValidationResult } from "./validate";
 
@@ -95,6 +98,74 @@ export interface AnalysisInput {
     source: ExecutionRecord["source"];
   }[];
   daily_wellness: { date: string; fatigue_score: number; sleep_hours?: number }[];
+  /** 历次计划版本：调整了什么，以及该版本使用期间的执行效果 */
+  plan_history: PlanHistoryEntry[];
+  /** 个人档案的变更记录（最近的在后） */
+  profile_changes: { date: string; field: string; from: string; to: string }[];
+  /** 用户为本次分析填写的补充说明 */
+  user_note?: string;
+  /** 写入系统提示词，不重复放进数据 JSON */
+  profile: UserProfile;
+}
+
+export interface PlanHistoryEntry {
+  version: number;
+  created_date: string;
+  source: PlanVersion["source"];
+  change_note?: string;
+  /** 相对上一版的具体变化 */
+  changes: string[];
+  /** 该版本使用期间（到下一版创建前一天） */
+  active: { from: string; to: string };
+  outcome: { completion_rate: number; scheduled: number; skipped: number; pain_average: number; pain_max: number; fatigue_average: number };
+}
+
+const MAX_HISTORY_VERSIONS = 5;
+const MAX_PROFILE_CHANGES = 10;
+
+/** 最近几个版本的调整内容与执行效果，帮助 AI 判断上次调整是否有效 */
+export function buildPlanHistory(
+  versions: PlanVersion[],
+  records: ExecutionRecord[],
+  dailyWellness: DailyWellness[],
+  today: string
+): PlanHistoryEntry[] {
+  const sorted = [...versions].sort((a, b) => a.created_at.localeCompare(b.created_at));
+  return sorted
+    .map((v, i): PlanHistoryEntry => {
+      const created = toDateStr(new Date(v.created_at));
+      const next = sorted[i + 1];
+      const from = created > v.start_date ? created : v.start_date;
+      const to = next ? addDays(toDateStr(new Date(next.created_at)), -1) : today;
+      const parent = versions.find((x) => x.id === v.parent_version_id);
+      const diff = parent ? comparePlanVersions(parent, v) : null;
+      const changes = diff
+        ? [
+            ...diff.added.map((a) => `新增任务：${a.taskTitle}`),
+            ...diff.removed.map((r) => `删除任务：${r.taskTitle}`),
+            ...diff.modified.flatMap((m) => m.changes.map((c) => `${m.taskTitle} · ${c}`)),
+          ]
+        : [];
+      const range = { from, to: to < from ? from : to };
+      const s = buildExportSummary(v, records, dailyWellness, today, range);
+      return {
+        version: v.version,
+        created_date: created,
+        source: v.source,
+        change_note: v.change_note,
+        changes,
+        active: range,
+        outcome: {
+          completion_rate: s.completion_rate,
+          scheduled: s.scheduled_count,
+          skipped: s.skipped_count,
+          pain_average: s.pain_average,
+          pain_max: s.pain_max,
+          fatigue_average: s.fatigue_average,
+        },
+      };
+    })
+    .slice(-MAX_HISTORY_VERSIONS);
 }
 
 export function buildAnalysisInput(args: {
@@ -107,8 +178,12 @@ export function buildAnalysisInput(args: {
   range?: { from: string; to: string };
   /** 是否包含文字备注（隐私：默认不发送原始备注） */
   includeNotes?: boolean;
+  profile?: UserProfile;
+  profileHistory?: ProfileChange[];
+  userNote?: string;
 }): AnalysisInput {
   const { kind, plan, versions, records, dailyWellness, today, includeNotes = false } = args;
+  const profile = args.profile ?? {};
   const range = args.range ?? defaultRange(kind, plan, today);
   const inRange = (d: string) => d >= range.from && d <= range.to;
 
@@ -163,6 +238,15 @@ export function buildAnalysisInput(args: {
     daily_wellness: dailyWellness
       .filter((d) => inRange(d.date))
       .map(({ date, fatigue_score, sleep_hours }) => ({ date, fatigue_score, sleep_hours })),
+    plan_history: buildPlanHistory(versions, records, dailyWellness, today),
+    profile_changes: (args.profileHistory ?? []).slice(-MAX_PROFILE_CHANGES).map((c) => ({
+      date: toDateStr(new Date(c.at)),
+      field: PROFILE_FIELDS.find((f) => f.key === c.field)?.label ?? c.field,
+      from: displayValue(c.field, c.from),
+      to: displayValue(c.field, c.to),
+    })),
+    user_note: args.userNote?.trim() || undefined,
+    profile,
   };
 }
 
@@ -177,16 +261,36 @@ const TASK_INSTRUCTIONS: Record<AnalysisKind, string> = {
   alert: "数据触发了本地风险规则（见 local_alerts）。解释可能原因并给出调整建议；如需减量，输出降低强度的 suggested_plan。",
 };
 
-const SYSTEM_PROMPT = `你是一名谨慎的体能训练与康复教练，帮助用户根据真实执行数据调整训练计划。
+/** 提示词有实质修改时加 1，记录在每条分析里，便于对比不同版本的效果 */
+export const PROMPT_VERSION = 2;
 
-原则：
-- 安全第一：疼痛评分 ≥ ${PAIN_RISK} 视为风险（level: "risk"），建议停止相关动作并在疼痛持续时就医；不做医学诊断。
-- 渐进调整：每次只做小幅调整（组数、次数、时长、重量或频率），说明原因。
-- 尊重用户的目标（plan.ai_summary）和实际完成能力；完成率低时优先降低难度或频率，而不是加量。
+const COACH_RULES = `你是一名谨慎、务实的体能训练与康复教练，帮助用户根据真实执行数据调整训练计划。用户是普通人，不是运动员，坚持下去比练得猛更重要。
+
+【调整规则】
+- 加量条件：近 2 周完成率 ≥ 85% 且疼痛 ≤ 3。每个动作一次只加一档（次数 +1~2、或时长 +5~10 秒、或组数 +1、或重量 +5%），不同时改多项。
+- 某个动作疼痛 ≥ ${PAIN_WARN}：只针对该动作降一档，或换成同部位更轻的替代动作；其他动作不变。
+- 因“没时间”跳过：缩短单次训练（减少动作数或组数），不降低强度；可建议更灵活的时间。
+- 因“疼痛”或“生病”跳过：暂停加量，必要时安排一周恢复（量减至约 70%）。
+- 完成率 < 60%：优先降低频率或难度，不新增任务。
+- 不改训练时间和星期，除非数据显示当前安排执行不了，或用户补充说明中提出。
+- 严格遵守用户档案中的伤病限制和器械条件，不安排需要所缺器械的动作。
+- 参考 plan_history：若上一次调整后完成率下降或疼痛上升，说明该调整可能过量，应回退或放缓；若效果良好，可沿同方向小步推进。
+- 参考 profile_changes：状态变好或变差（体重、伤病、可用时间）时相应调整。
+
+【安全】
+- 疼痛 ≥ ${PAIN_RISK}，或备注、补充说明中出现胸痛、头晕、呼吸困难、麻木、关节肿胀等情况：标为 level "risk"，建议停止相关训练并就医。
+- 不做医学诊断，不推荐药物或补剂。
+
+【输出风格】
+- 使用中文。summary 2–4 句，引用具体数据（例如“周二深蹲后疼痛 6 分”），先说结论。
+- findings 最多 5 条，按风险从高到低排列；没有问题时可为空数组。
+- suggested_plan.change_note 逐条写“改了什么 + 为什么”。
+
+【数据约定】
 - 调整已有任务时沿用原任务的 id 和动作 id；新增任务可以省略 id。日期使用 YYYY-MM-DD；weekday 中 0 = 周日。
-- 动作的 reps（次数）与 duration_sec（秒）二选一。
+- 动作的 reps（次数）与 duration_sec（秒）二选一。`;
 
-输出要求：只输出一个 JSON 对象，不要输出任何其他文字或代码块标记。格式必须符合下面的 JSON Schema（AIAnalysisOutput），其中 suggested_plan 符合 PlanInput：
+const OUTPUT_SPEC = `【输出格式】只输出一个 JSON 对象，不要输出任何其他文字或代码块标记。格式必须符合下面的 JSON Schema（AIAnalysisOutput），其中 suggested_plan 符合 PlanInput：
 
 AIAnalysisOutput:
 ${JSON.stringify(analysisSchema)}
@@ -194,13 +298,28 @@ ${JSON.stringify(analysisSchema)}
 PlanInput:
 ${JSON.stringify(planSchema)}`;
 
+/**
+ * 系统提示词 = 教练规则 + 用户档案 + 输出格式。
+ * 档案很少变化，系统提示词因此基本稳定；每次变化的数据都放在用户消息里。
+ */
+export function buildSystemPrompt(profile: UserProfile): string {
+  return `${COACH_RULES}
+
+【用户档案】
+${formatProfileForPrompt(profile)}
+
+${OUTPUT_SPEC}`;
+}
+
 export function buildPrompt(input: AnalysisInput): { system: string; user: string } {
+  const { profile, user_note, ...data } = input;
+  const note = user_note ? `\n本次补充说明（用户填写，优先考虑）：${user_note}\n` : "";
   const user = `任务：${ANALYSIS_KIND_LABEL[input.kind]}
 ${TASK_INSTRUCTIONS[input.kind]}
-
+${note}
 以下是执行数据（JSON）：
-${JSON.stringify(input, null, 2)}`;
-  return { system: SYSTEM_PROMPT, user };
+${JSON.stringify(data, null, 2)}`;
+  return { system: buildSystemPrompt(profile), user };
 }
 
 /** 手动复制给外部 AI 时，把系统提示与数据合成一段文本 */
@@ -224,7 +343,9 @@ export function parseAnalysisReply(text: string): ValidationResult<AIAnalysisOut
 
 export function createAnalysis(
   output: AIAnalysisOutput,
-  meta: Pick<AIAnalysis, "kind" | "channel" | "plan_version_id" | "range" | "provider" | "model">
+  meta: Pick<AIAnalysis, "kind" | "channel" | "plan_version_id" | "range" | "provider" | "model" | "user_note">
 ): AIAnalysis {
-  return { ...output, ...meta, id: newId(), created_at: new Date().toISOString(), status: "new" };
+  const a: AIAnalysis = { ...output, ...meta, id: newId(), created_at: new Date().toISOString(), status: "new", prompt_version: PROMPT_VERSION };
+  if (!a.user_note) delete a.user_note;
+  return a;
 }

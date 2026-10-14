@@ -4,7 +4,7 @@
  * API Key 单独存放，不随状态导出。原型里存在 localStorage 仅用于演示，
  * 正式 App 必须存入钥匙串（Keychain）。
  */
-import type { AIAnalysis, AIServiceConfig, AISettings, DailyWellness, ExecutionRecord, PlanVersion } from "../types";
+import type { AIAnalysis, AIServiceConfig, AISettings, DailyWellness, ExecutionRecord, PlanVersion, ProfileChange, UserProfile } from "../types";
 import { createServiceFromPreset } from "./ai/presets";
 import { SCHEMA_VERSION } from "../types";
 
@@ -16,6 +16,8 @@ export interface PersistedState {
   dailyWellness: DailyWellness[];
   analyses: AIAnalysis[];
   aiSettings: AISettings;
+  profile: UserProfile;
+  profileHistory: ProfileChange[];
 }
 
 const STATE_KEY = "atp:state:v2";
@@ -65,6 +67,8 @@ export function emptyState(): PersistedState {
     dailyWellness: [],
     analyses: [],
     aiSettings: DEFAULT_AI_SETTINGS,
+    profile: {},
+    profileHistory: [],
   };
 }
 

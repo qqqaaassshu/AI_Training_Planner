@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CalendarCheck, Upload, History, Sparkles, GitBranch } from "lucide-react";
+import { CalendarCheck, Upload, History, Sparkles, GitBranch, UserRound } from "lucide-react";
 import { DashboardView } from "./components/DashboardView";
 import { TodayView } from "./components/TodayView";
 import { ImportPlan } from "./components/ImportPlan";
@@ -7,7 +7,9 @@ import { HistoryView } from "./components/HistoryView";
 import { AIView } from "./components/AIView";
 import { PlanHistoryView } from "./components/PlanHistoryView";
 import { WatchWidget } from "./components/WatchWidget";
-import type { AIAnalysis, AISettings, ExecutionRecord, PlanTask, PlanVersion, RecordSource, SetLog } from "./types";
+import type { AIAnalysis, AISettings, ExecutionRecord, PlanTask, PlanVersion, RecordSource, SetLog, UserProfile } from "./types";
+import { diffProfile } from "./utils/profile";
+import { ProfileView } from "./components/ProfileView";
 import { createPlanVersion, findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "./utils/plan";
 import { daysBetween, todayStr } from "./utils/date";
 import { newId } from "./utils/id";
@@ -41,7 +43,8 @@ export default function App() {
   const [today, setToday] = useState(todayStr);
   const [apiKeys, setApiKeys] = useState(loadApiKeys);
 
-  const { planVersions, currentPlanId, records, dailyWellness, analyses, aiSettings } = state;
+  const { planVersions, currentPlanId, records, dailyWellness, analyses, aiSettings, profile, profileHistory } = state;
+  const [showProfile, setShowProfile] = useState(false);
   const plan = planVersions.find((p) => p.id === currentPlanId) ?? null;
 
   useEffect(() => saveState(state), [state]);
@@ -61,6 +64,15 @@ export default function App() {
   function handleApiKeysChange(keys: Record<string, string>) {
     setApiKeys(keys);
     saveApiKeys(keys);
+  }
+
+  function handleSaveProfile(next: UserProfile) {
+    const at = new Date().toISOString();
+    update((s) => ({
+      ...s,
+      profile: { ...next, updated_at: at },
+      profileHistory: [...s.profileHistory, ...diffProfile(s.profile, next, at)],
+    }));
   }
 
   function handleAISettings(aiSettings: AISettings) {
@@ -106,7 +118,7 @@ export default function App() {
 
     const controller = new AbortController();
     runApiAnalysis({
-      input: buildAnalysisInput({ kind: "weekly_review", plan, versions: planVersions, records, dailyWellness, today }),
+      input: buildAnalysisInput({ kind: "weekly_review", plan, versions: planVersions, records, dailyWellness, today, profile, profileHistory }),
       planVersionId: plan.id,
       service: activeService,
       apiKey: activeKey,
@@ -234,6 +246,7 @@ export default function App() {
                   )}
                 </div>
               </div>
+              <div className="flex items-center">
               <div className="rounded-full px-2.5 py-1 flex items-center gap-1.5" style={{ background: "var(--secondary)" }}>
                 <div
                   className="w-1.5 h-1.5 rounded-full"
@@ -245,10 +258,22 @@ export default function App() {
                   {todayTasks.length - remainingCount}/{todayTasks.length}
                 </span>
               </div>
+              <button
+                onClick={() => setShowProfile((x) => !x)}
+                title="个人档案"
+                className="w-8 h-8 rounded-full flex items-center justify-center ml-2"
+                style={{ background: showProfile ? "rgba(255,107,53,0.15)" : "var(--secondary)" }}
+              >
+                <UserRound size={16} color={showProfile ? "var(--primary)" : "var(--muted-foreground)"} />
+              </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 py-4" style={{ scrollbarWidth: "none" }}>
-              {tab === "home" && homeView === "dashboard" && (
+              {showProfile && (
+                <ProfileView profile={profile} history={profileHistory} onSave={handleSaveProfile} onClose={() => setShowProfile(false)} />
+              )}
+              {!showProfile && tab === "home" && homeView === "dashboard" && (
                 <DashboardView
                   plan={plan}
                   records={records}
@@ -259,7 +284,7 @@ export default function App() {
                   onStartToday={() => setHomeView("today")}
                 />
               )}
-              {tab === "home" && homeView === "today" && (
+              {!showProfile && tab === "home" && homeView === "today" && (
                 <TodayView
                   plan={plan}
                   records={records}
@@ -271,7 +296,7 @@ export default function App() {
                   onBack={() => setHomeView("dashboard")}
                 />
               )}
-              {tab === "import" && (
+              {!showProfile && tab === "import" && (
                 <ImportPlan
                   onImport={handleImport}
                   currentPlan={plan}
@@ -279,14 +304,14 @@ export default function App() {
                   today={today}
                 />
               )}
-              {tab === "versions" && (
+              {!showProfile && tab === "versions" && (
                 <PlanHistoryView
                   versions={planVersions}
                   currentVersionId={currentPlanId}
                   onSelectVersion={handleSelectVersion}
                 />
               )}
-              {tab === "history" && (
+              {!showProfile && tab === "history" && (
                 <HistoryView
                   versions={planVersions}
                   records={records}
@@ -296,7 +321,7 @@ export default function App() {
                   onDeleteRecord={handleDeleteRecord}
                 />
               )}
-              {tab === "ai" && (
+              {!showProfile && tab === "ai" && (
                 <AIView
                   plan={plan}
                   versions={planVersions}
@@ -304,6 +329,9 @@ export default function App() {
                   dailyWellness={dailyWellness}
                   today={today}
                   analyses={analyses}
+                  profile={profile}
+                  profileHistory={profileHistory}
+                  onOpenProfile={() => setShowProfile(true)}
                   settings={aiSettings}
                   apiKeys={apiKeys}
                   onSettingsChange={handleAISettings}
@@ -326,6 +354,7 @@ export default function App() {
                     key={id}
                     onClick={() => {
                       setTab(id);
+                      setShowProfile(false);
                       if (id === "home") setHomeView("dashboard");
                     }}
                     className="flex-1 flex flex-col items-center gap-0.5 py-2 rounded-xl transition-all"

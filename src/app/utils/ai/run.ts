@@ -28,5 +28,6 @@ export async function runApiAnalysis(args: {
     range: input.range,
     provider: service.name,
     model: service.model,
+    user_note: input.user_note,
   });
 }
