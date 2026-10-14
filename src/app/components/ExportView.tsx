@@ -107,65 +107,16 @@ function buildMarkdown(
   return lines.join("\n");
 }
 
-function buildAIPrompt(
-  plan: PlanVersion | null,
-  records: ExecutionRecord[],
-  dailyWellness: DailyWellness[],
-  today: string
-): string {
-  const summary = buildExportSummary(plan, records, dailyWellness, today);
-  const dataPayload = {
-    plan: plan
-      ? {
-          plan_name: plan.plan_name,
-          version: plan.version,
-          start_date: plan.start_date,
-          end_date: plan.end_date,
-          ai_summary: plan.ai_summary,
-          tasks: plan.tasks,
-        }
-      : null,
-    execution_records: records,
-    daily_wellness: dailyWellness,
-    summary,
-  };
-
-  const goals = plan?.ai_summary
-    ? plan.ai_summary.split(/[，,、]/).map((s) => s.trim()).filter(Boolean)
-    : ["改善睡眠", "恢复手腕", "提升体能"];
-
-  const goalLines = goals.map((g) => g).join("\n");
-
-  return `请分析我的训练执行情况。
-
-目标：
-
-${goalLines}
-
-以下是执行数据：
-
-${JSON.stringify(dataPayload, null, 2)}
-
-请输出：
-
-1. 执行分析
-2. 风险分析
-3. 下一版训练计划
-4. 是否需要调整恢复策略`;
-}
-
-type ExportFormat = "json" | "markdown" | "ai-prompt";
+type ExportFormat = "json" | "markdown";
 
 export function ExportView({ plan, versions, records, dailyWellness, today }: ExportViewProps) {
-  const [format, setFormat] = useState<ExportFormat>("ai-prompt");
+  const [format, setFormat] = useState<ExportFormat>("markdown");
   const [copied, setCopied] = useState(false);
 
   const content =
     format === "json"
       ? buildJSON(plan, records, dailyWellness, today)
-      : format === "markdown"
-        ? buildMarkdown(plan, versions, records, dailyWellness, today)
-        : buildAIPrompt(plan, records, dailyWellness, today);
+      : buildMarkdown(plan, versions, records, dailyWellness, today);
 
   function copy() {
     navigator.clipboard.writeText(content);
@@ -174,9 +125,8 @@ export function ExportView({ plan, versions, records, dailyWellness, today }: Ex
   }
 
   function download() {
-    const ext = format === "json" ? "json" : format === "markdown" ? "md" : "txt";
-    const mime =
-      format === "json" ? "application/json" : format === "markdown" ? "text/markdown" : "text/plain";
+    const ext = format === "json" ? "json" : "md";
+    const mime = format === "json" ? "application/json" : "text/markdown";
     const blob = new Blob([content], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -189,7 +139,6 @@ export function ExportView({ plan, versions, records, dailyWellness, today }: Ex
   const formatLabels: Record<ExportFormat, string> = {
     json: "JSON",
     markdown: "Markdown",
-    "ai-prompt": "AI Prompt",
   };
 
   return (
@@ -197,12 +146,12 @@ export function ExportView({ plan, versions, records, dailyWellness, today }: Ex
       <div className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <h2 style={{ color: "var(--foreground)" }}>导出执行记录</h2>
         <p style={{ fontSize: 13, color: "var(--muted-foreground)", marginTop: 4 }}>
-          将执行数据交给 AI，生成下一版训练计划
+          备份或分享完整执行数据。给 AI 分析请用「分析」页
         </p>
       </div>
 
       <div className="flex rounded-2xl p-1 gap-1" style={{ background: "var(--secondary)" }}>
-        {(["ai-prompt", "json", "markdown"] as const).map((f) => (
+        {(["markdown", "json"] as const).map((f) => (
           <button
             key={f}
             onClick={() => setFormat(f)}
@@ -278,11 +227,6 @@ export function ExportView({ plan, versions, records, dailyWellness, today }: Ex
         </pre>
       </div>
 
-      <div className="rounded-2xl p-4" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-        <p style={{ fontSize: 12, color: "var(--muted-foreground)", lineHeight: 1.7 }}>
-          💡 <strong style={{ color: "var(--foreground)" }}>AI Prompt 模式：</strong> 一键复制完整提示词，粘贴给 ChatGPT 或 Claude，自动包含执行数据、疼痛/疲劳统计与遗漏任务分析。
-        </p>
-      </div>
     </div>
   );
 }

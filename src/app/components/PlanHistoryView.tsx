@@ -2,6 +2,7 @@ import { useState } from "react";
 import { GitBranch, ChevronRight, ArrowLeftRight } from "lucide-react";
 import type { PlanSource, PlanVersion } from "../types";
 import { comparePlanVersions, formatExerciseTarget } from "../utils/plan";
+import { PlanDiffView } from "./PlanDiffView";
 
 const SOURCE_LABEL: Record<PlanSource, string> = {
   json_import: "JSON 导入",
@@ -61,55 +62,7 @@ export function PlanHistoryView({ versions, currentVersionId, onSelectVersion }:
           </p>
         </div>
 
-        {diff.added.length > 0 && (
-          <div className="rounded-2xl p-4 space-y-2" style={{ background: "#1a2a1a", border: "1px solid rgba(74,222,128,0.2)" }}>
-            <p style={{ fontSize: 12, color: "#4ade80", fontWeight: 600 }}>新增</p>
-            {diff.added.map((item, i) => (
-              <div key={i}>
-                <p style={{ fontSize: 13, color: "var(--foreground)" }}>{item.taskTitle}</p>
-                {item.exercises.length > 0 && (
-                  <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{item.exercises.join("、")}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {diff.removed.length > 0 && (
-          <div className="rounded-2xl p-4 space-y-2" style={{ background: "#2a1a1a", border: "1px solid rgba(229,62,62,0.2)" }}>
-            <p style={{ fontSize: 12, color: "#e53e3e", fontWeight: 600 }}>删除</p>
-            {diff.removed.map((item, i) => (
-              <div key={i}>
-                <p style={{ fontSize: 13, color: "var(--foreground)" }}>{item.taskTitle}</p>
-                {item.exercises.length > 0 && (
-                  <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{item.exercises.join("、")}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-
-        {diff.modified.length > 0 && (
-          <div className="rounded-2xl p-4 space-y-3" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
-            <p style={{ fontSize: 12, color: "var(--primary)", fontWeight: 600 }}>修改频率 / 动作</p>
-            {diff.modified.map((item, i) => (
-              <div key={i}>
-                <p style={{ fontSize: 13, color: "var(--foreground)", fontWeight: 500 }}>{item.taskTitle}</p>
-                <ul className="mt-1 space-y-0.5">
-                  {item.changes.map((c, j) => (
-                    <li key={j} style={{ fontSize: 12, color: "var(--muted-foreground)" }}>· {c}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {diff.added.length === 0 && diff.removed.length === 0 && diff.modified.length === 0 && (
-          <p style={{ fontSize: 13, color: "var(--muted-foreground)", textAlign: "center", padding: 24 }}>
-            两个版本没有明显差异
-          </p>
-        )}
+        <PlanDiffView diff={diff} />
       </div>
     );
   }

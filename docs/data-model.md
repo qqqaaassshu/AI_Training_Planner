@@ -79,3 +79,22 @@ AIAnalysis ── suggested_plan → 接受后生成新的 PlanVersion（source 
 | `WatchTrainingMode` 中的 ± 按钮 | 数码表冠 |
 | 手表训练结束时写入记录 | 通过 `HKWorkoutSession` 训练，经 WatchConnectivity 同步到手机 |
 | `source` / `updated_at` | 多设备同步时用于解决冲突 |
+
+## AI 分析流程
+
+```
+执行数据 → buildAnalysisInput（共用） ─┬─ 导出：复制提示词 → 外部 AI → 粘贴回复 ─┐
+                                      └─ API：runApiAnalysis → 服务商适配层 ─────┤
+                                                                               ↓
+                    parseAnalysisReply（按 JSON Schema 校验） → AnalysisCard 显示差异 → 用户确认 → 新的 PlanVersion
+```
+
+| 文件 | 作用 |
+|---|---|
+| `utils/analysis.ts` | 构建分析输入、提示词（含两份 JSON Schema）、解析回复；`detectAlerts` 本地安全规则 |
+| `utils/ai/providers.ts` | 服务商适配层。目前接入 Anthropic（官方 SDK，默认 `claude-opus-5-5`，开启服务端拒绝时自动换模型重试）；新增服务商时实现 `AIProvider` 接口 |
+| `utils/ai/run.ts` | 通过 API 运行一次分析并校验结果；手动分析和每周自动复盘共用 |
+
+- **隐私**：第一次通过 API 调用前需要用户同意；默认不发送文字备注，可单独勾选。
+- **本地安全规则**（`detectAlerts`，不依赖 AI）：近 7 天疼痛 ≥ 7 判为风险；连续两次疼痛 ≥ 5、因疼痛跳过 ≥ 2 次、跳过 ≥ 3 次、连续多日疲劳 ≥ 7 判为提醒。
+- **每周自动复盘**：需要开启开关、已同意数据上传、已配置 Key；距上次复盘满 7 天时，打开 App 会运行一次。

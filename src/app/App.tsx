@@ -1,20 +1,22 @@
 import { useEffect, useState } from "react";
-import { CalendarCheck, Upload, History, Download, GitBranch } from "lucide-react";
+import { CalendarCheck, Upload, History, Sparkles, GitBranch } from "lucide-react";
 import { DashboardView } from "./components/DashboardView";
 import { TodayView } from "./components/TodayView";
 import { ImportPlan } from "./components/ImportPlan";
 import { HistoryView } from "./components/HistoryView";
-import { ExportView } from "./components/ExportView";
+import { AIView } from "./components/AIView";
 import { PlanHistoryView } from "./components/PlanHistoryView";
 import { WatchWidget } from "./components/WatchWidget";
-import type { ExecutionRecord, PlanTask, PlanVersion, RecordSource, SetLog } from "./types";
-import { findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "./utils/plan";
-import { todayStr } from "./utils/date";
+import type { AIAnalysis, AISettings, ExecutionRecord, PlanTask, PlanVersion, RecordSource, SetLog } from "./types";
+import { createPlanVersion, findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "./utils/plan";
+import { daysBetween, todayStr } from "./utils/date";
 import { newId } from "./utils/id";
-import { loadState, saveState, type PersistedState } from "./utils/storage";
+import { loadApiKey, loadState, saveApiKey, saveState, type PersistedState } from "./utils/storage";
+import { buildAnalysisInput } from "./utils/analysis";
+import { runApiAnalysis } from "./utils/ai/run";
 import "../styles/fonts.css";
 
-type Tab = "home" | "import" | "history" | "export" | "versions";
+type Tab = "home" | "import" | "history" | "ai" | "versions";
 type HomeView = "dashboard" | "today";
 
 /** 组件提交记录时只需提供这些字段，其余由 App 补全 */
@@ -26,7 +28,7 @@ const TABS: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
   { id: "import", label: "导入", icon: Upload },
   { id: "versions", label: "版本", icon: GitBranch },
   { id: "history", label: "记录", icon: History },
-  { id: "export", label: "导出", icon: Download },
+  { id: "ai", label: "AI", icon: Sparkles },
 ];
 
 export default function App() {
@@ -36,8 +38,9 @@ export default function App() {
   const [watchNotification, setWatchNotification] = useState<{ title: string; taskId: string } | null>(null);
   const [watchTrainingTask, setWatchTrainingTask] = useState<PlanTask | null>(null);
   const [today, setToday] = useState(todayStr);
+  const [apiKey, setApiKey] = useState(loadApiKey);
 
-  const { planVersions, currentPlanId, records, dailyWellness } = state;
+  const { planVersions, currentPlanId, records, dailyWellness, analyses, aiSettings } = state;
   const plan = planVersions.find((p) => p.id === currentPlanId) ?? null;
 
   useEffect(() => saveState(state), [state]);
@@ -53,6 +56,64 @@ export default function App() {
   function handleImport(newPlan: PlanVersion) {
     update((s) => ({ ...s, planVersions: [...s.planVersions, newPlan], currentPlanId: newPlan.id }));
   }
+
+  function handleApiKeyChange(key: string) {
+    setApiKey(key);
+    saveApiKey(key);
+  }
+
+  function handleAISettings(aiSettings: AISettings) {
+    update((s) => ({ ...s, aiSettings }));
+  }
+
+  function handleAddAnalysis(a: AIAnalysis) {
+    update((s) => ({ ...s, analyses: [...s.analyses, a] }));
+  }
+
+  function setAnalysisStatus(id: string, status: AIAnalysis["status"]) {
+    update((s) => ({ ...s, analyses: s.analyses.map((x) => (x.id === id ? { ...x, status } : x)) }));
+  }
+
+  /** 接受 AI 建议：基于当前版本生成新版本并切换 */
+  function handleAcceptAnalysis(a: AIAnalysis) {
+    if (!a.suggested_plan) return setAnalysisStatus(a.id, "accepted");
+    update((s) => {
+      const parent = s.planVersions.find((v) => v.id === s.currentPlanId) ?? null;
+      const next = createPlanVersion(a.suggested_plan!, s.planVersions, { source: "ai_analysis", parent, analysis_id: a.id });
+      return {
+        ...s,
+        planVersions: [...s.planVersions, next],
+        currentPlanId: next.id,
+        analyses: s.analyses.map((x) => (x.id === a.id ? { ...x, status: "accepted" } : x)),
+      };
+    });
+  }
+
+  // 每周自动复盘：距上次复盘满 7 天时运行一次（需开启、已同意、已配置 Key）
+  useEffect(() => {
+    if (!plan || !apiKey || !aiSettings.auto_weekly_review || !aiSettings.consent_given) return;
+    const last = analyses
+      .filter((a) => a.kind === "weekly_review")
+      .reduce<string | null>((m, a) => (!m || a.created_at > m ? a.created_at : m), null);
+    if (last && daysBetween(todayStr(new Date(last)), today) < 7) return;
+    if (daysBetween(plan.start_date, today) < 7) return;
+
+    const controller = new AbortController();
+    runApiAnalysis({
+      input: buildAnalysisInput({ kind: "weekly_review", plan, versions: planVersions, records, dailyWellness, today }),
+      planVersionId: plan.id,
+      settings: aiSettings,
+      apiKey,
+      signal: controller.signal,
+    })
+      .then(handleAddAnalysis)
+      .catch(() => {
+        // 自动复盘失败时静默，用户可在 AI 页手动重试
+      });
+    return () => controller.abort();
+    // 只在日期、计划或开关变化时检查，避免每次记录变动都触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [today, plan?.id, apiKey, aiSettings.auto_weekly_review, aiSettings.consent_given]);
 
   function handleSelectVersion(id: string) {
     update((s) => ({ ...s, currentPlanId: id }));
@@ -185,6 +246,9 @@ export default function App() {
                 <DashboardView
                   plan={plan}
                   records={records}
+                  dailyWellness={dailyWellness}
+                  pendingAnalyses={analyses.filter((a) => a.status === "new").length}
+                  onOpenAI={() => setTab("ai")}
                   today={today}
                   onStartToday={() => setHomeView("today")}
                 />
@@ -226,8 +290,22 @@ export default function App() {
                   onDeleteRecord={handleDeleteRecord}
                 />
               )}
-              {tab === "export" && (
-                <ExportView plan={plan} versions={planVersions} records={records} dailyWellness={dailyWellness} today={today} />
+              {tab === "ai" && (
+                <AIView
+                  plan={plan}
+                  versions={planVersions}
+                  records={records}
+                  dailyWellness={dailyWellness}
+                  today={today}
+                  analyses={analyses}
+                  settings={aiSettings}
+                  apiKey={apiKey}
+                  onSettingsChange={handleAISettings}
+                  onApiKeyChange={handleApiKeyChange}
+                  onAddAnalysis={handleAddAnalysis}
+                  onAcceptAnalysis={handleAcceptAnalysis}
+                  onRejectAnalysis={(a) => setAnalysisStatus(a.id, "rejected")}
+                />
               )}
             </div>
 

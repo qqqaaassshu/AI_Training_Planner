@@ -1,15 +1,20 @@
-import { ChevronRight, Target } from "lucide-react";
-import type { PlanVersion, ExecutionRecord } from "../types";
+import { ChevronRight, Sparkles, Target } from "lucide-react";
+import type { PlanVersion, ExecutionRecord, DailyWellness } from "../types";
+import { detectAlerts } from "../utils/analysis";
+import { FindingList } from "./AnalysisCard";
 import { buildExportSummary, findRecord, getCurrentWeek, getTasksOnDate, getTotalWeeks, isDone } from "../utils/plan";
 
 interface DashboardViewProps {
   plan: PlanVersion | null;
   records: ExecutionRecord[];
+  dailyWellness: DailyWellness[];
+  pendingAnalyses: number;
+  onOpenAI: () => void;
   today: string;
   onStartToday: () => void;
 }
 
-export function DashboardView({ plan, records, today, onStartToday }: DashboardViewProps) {
+export function DashboardView({ plan, records, dailyWellness, pendingAnalyses, onOpenAI, today, onStartToday }: DashboardViewProps) {
   if (!plan) {
     return (
       <div className="flex flex-col items-center justify-center py-20 space-y-4">
@@ -28,8 +33,26 @@ export function DashboardView({ plan, records, today, onStartToday }: DashboardV
   const currentWeek = getCurrentWeek(plan, today);
   const totalWeeks = getTotalWeeks(plan);
 
+  const alerts = detectAlerts(records, dailyWellness, today);
+
   return (
     <div className="space-y-5">
+      {alerts.length > 0 && <FindingList findings={alerts} />}
+
+      {pendingAnalyses > 0 && (
+        <button
+          onClick={onOpenAI}
+          className="w-full rounded-2xl px-4 py-3 flex items-center justify-between"
+          style={{ background: "rgba(255,107,53,0.1)", border: "1px solid rgba(255,107,53,0.3)" }}
+        >
+          <span className="flex items-center gap-2" style={{ fontSize: 13, color: "var(--foreground)" }}>
+            <Sparkles size={14} color="var(--primary)" />
+            有 {pendingAnalyses} 条 AI 分析待查看
+          </span>
+          <ChevronRight size={16} color="var(--muted-foreground)" />
+        </button>
+      )}
+
       {/* Current Plan Dashboard */}
       <div
         className="rounded-2xl p-5 space-y-4"
