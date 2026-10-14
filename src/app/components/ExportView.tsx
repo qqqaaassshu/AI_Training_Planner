@@ -1,32 +1,40 @@
 import { useState } from "react";
 import { Download, Copy, CheckCircle2 } from "lucide-react";
 import type { PlanVersion, ExecutionRecord, DailyWellness } from "../types";
-import { buildExportSummary } from "../utils/plan";
+import { buildExportSummary, summarizeSets } from "../utils/plan";
+import { formatDuration } from "../utils/date";
+import { skipReasonLabel } from "./SetEditor";
 
 interface ExportViewProps {
   plan: PlanVersion | null;
+  versions: PlanVersion[];
   records: ExecutionRecord[];
   dailyWellness: DailyWellness[];
+  today: string;
+}
+
+function taskTitle(versions: PlanVersion[], taskId: string): string {
+  for (const v of [...versions].sort((a, b) => b.version - a.version)) {
+    const t = v.tasks.find((x) => x.id === taskId);
+    if (t) return t.title;
+  }
+  return taskId;
 }
 
 function buildJSON(
   plan: PlanVersion | null,
   records: ExecutionRecord[],
-  dailyWellness: DailyWellness[]
+  dailyWellness: DailyWellness[],
+  today: string
 ): string {
-  const summary = buildExportSummary(plan, records, dailyWellness);
   return JSON.stringify(
     {
       exported_at: new Date().toISOString(),
+      today,
       plan: plan ?? null,
       execution_records: records,
       daily_wellness: dailyWellness,
-      summary: {
-        ...summary,
-        total: records.length,
-        completed: records.filter((r) => r.status === "completed").length,
-        skipped: records.filter((r) => r.status === "skipped").length,
-      },
+      summary: buildExportSummary(plan, records, dailyWellness, today),
     },
     null,
     2
@@ -35,10 +43,12 @@ function buildJSON(
 
 function buildMarkdown(
   plan: PlanVersion | null,
+  versions: PlanVersion[],
   records: ExecutionRecord[],
-  dailyWellness: DailyWellness[]
+  dailyWellness: DailyWellness[],
+  today: string
 ): string {
-  const summary = buildExportSummary(plan, records, dailyWellness);
+  const summary = buildExportSummary(plan, records, dailyWellness, today);
   const lines: string[] = [];
   lines.push(`# 训练执行报告`);
   lines.push(`\n导出时间：${new Date().toLocaleString("zh-CN")}\n`);
@@ -52,7 +62,8 @@ function buildMarkdown(
 
   lines.push(`## 执行摘要`);
   lines.push(`\n- 完成率：${summary.completion_rate}%`);
-  lines.push(`- 疼痛均值：${summary.pain_average}/10`);
+  lines.push(`- 完成 ${summary.completed_count} · 部分 ${summary.partial_count} · 跳过 ${summary.skipped_count} / 应完成 ${summary.scheduled_count}`);
+  lines.push(`- 疼痛均值：${summary.pain_average}/10（最高 ${summary.pain_max}）`);
   lines.push(`- 疲劳均值：${summary.fatigue_average}/10`);
   if (summary.missed_tasks.length > 0) {
     lines.push(`- 遗漏任务：${summary.missed_tasks.length} 项`);
@@ -75,13 +86,14 @@ function buildMarkdown(
       if (wellness) lines.push(`今日疲劳：${wellness.fatigue_score}/10\n`);
 
       for (const r of byDate[date]) {
-        const taskTitle = plan?.tasks.find((t) => t.id === r.task_id)?.title ?? r.task_id;
-        const statusMap = { completed: "✅ 完成", skipped: "❌ 跳过", snoozed: "⏰ 延后" };
-        lines.push(`**${taskTitle}** — ${statusMap[r.status]}`);
-        if (r.actual && r.actual.length > 0) {
+        const statusMap = { completed: "✅ 完成", partial: "🟡 部分完成", skipped: "❌ 跳过", snoozed: "⏰ 延后" };
+        const reason = r.skip_reason ? `（${skipReasonLabel(r.skip_reason)}）` : "";
+        lines.push(`**${taskTitle(versions, r.task_id)}** — ${statusMap[r.status]}${reason}`);
+        if (r.sets && r.sets.length > 0) {
           lines.push("\n实际完成：");
-          for (const a of r.actual) {
-            lines.push(`- ${a.name}: ${a.sets}×${a.reps}`);
+          for (const a of summarizeSets(r.sets)) {
+            const per = a.duration_sec !== undefined ? formatDuration(a.duration_sec) : `${a.reps}`;
+            lines.push(`- ${a.name}: ${a.sets}×${per}${a.weight_kg ? ` @${a.weight_kg}kg` : ""}`);
           }
         }
         if (r.pain_score !== undefined) lines.push(`\n疼痛评分：${r.pain_score}/10`);
@@ -98,9 +110,10 @@ function buildMarkdown(
 function buildAIPrompt(
   plan: PlanVersion | null,
   records: ExecutionRecord[],
-  dailyWellness: DailyWellness[]
+  dailyWellness: DailyWellness[],
+  today: string
 ): string {
-  const summary = buildExportSummary(plan, records, dailyWellness);
+  const summary = buildExportSummary(plan, records, dailyWellness, today);
   const dataPayload = {
     plan: plan
       ? {
@@ -143,16 +156,16 @@ ${JSON.stringify(dataPayload, null, 2)}
 
 type ExportFormat = "json" | "markdown" | "ai-prompt";
 
-export function ExportView({ plan, records, dailyWellness }: ExportViewProps) {
+export function ExportView({ plan, versions, records, dailyWellness, today }: ExportViewProps) {
   const [format, setFormat] = useState<ExportFormat>("ai-prompt");
   const [copied, setCopied] = useState(false);
 
   const content =
     format === "json"
-      ? buildJSON(plan, records, dailyWellness)
+      ? buildJSON(plan, records, dailyWellness, today)
       : format === "markdown"
-        ? buildMarkdown(plan, records, dailyWellness)
-        : buildAIPrompt(plan, records, dailyWellness);
+        ? buildMarkdown(plan, versions, records, dailyWellness, today)
+        : buildAIPrompt(plan, records, dailyWellness, today);
 
   function copy() {
     navigator.clipboard.writeText(content);
@@ -168,7 +181,7 @@ export function ExportView({ plan, records, dailyWellness }: ExportViewProps) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `training-report-${new Date().toISOString().slice(0, 10)}.${ext}`;
+    a.download = `training-report-${today}.${ext}`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -209,7 +222,7 @@ export function ExportView({ plan, records, dailyWellness }: ExportViewProps) {
       {plan && (
         <div className="grid grid-cols-2 gap-2">
           {(() => {
-            const s = buildExportSummary(plan, records, dailyWellness);
+            const s = buildExportSummary(plan, records, dailyWellness, today);
             return [
               { label: "完成率", value: `${s.completion_rate}%` },
               { label: "疼痛均值", value: `${s.pain_average}` },

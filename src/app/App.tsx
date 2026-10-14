@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CalendarCheck, Upload, History, Download, GitBranch } from "lucide-react";
 import { DashboardView } from "./components/DashboardView";
 import { TodayView } from "./components/TodayView";
@@ -7,12 +7,19 @@ import { HistoryView } from "./components/HistoryView";
 import { ExportView } from "./components/ExportView";
 import { PlanHistoryView } from "./components/PlanHistoryView";
 import { WatchWidget } from "./components/WatchWidget";
-import type { PlanVersion, ExecutionRecord, PlanTask, DailyWellness, ActualExercise } from "./types";
-import { isTaskToday } from "./utils/plan";
+import type { ExecutionRecord, PlanTask, PlanVersion, RecordSource, SetLog } from "./types";
+import { findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "./utils/plan";
+import { todayStr } from "./utils/date";
+import { newId } from "./utils/id";
+import { loadState, saveState, type PersistedState } from "./utils/storage";
 import "../styles/fonts.css";
 
 type Tab = "home" | "import" | "history" | "export" | "versions";
 type HomeView = "dashboard" | "today";
+
+/** 组件提交记录时只需提供这些字段，其余由 App 补全 */
+export type RecordDraft = Pick<ExecutionRecord, "task_id" | "status" | "notes"> &
+  Partial<Pick<ExecutionRecord, "skip_reason" | "sets" | "pain_score" | "fatigue_score" | "started_at">>;
 
 const TABS: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
   { id: "home", label: "首页", icon: CalendarCheck },
@@ -25,88 +32,104 @@ const TABS: { id: Tab; label: string; icon: typeof CalendarCheck }[] = [
 export default function App() {
   const [tab, setTab] = useState<Tab>("home");
   const [homeView, setHomeView] = useState<HomeView>("dashboard");
-  const [planVersions, setPlanVersions] = useState<PlanVersion[]>([]);
-  const [currentPlanId, setCurrentPlanId] = useState<string | null>(null);
-  const [records, setRecords] = useState<ExecutionRecord[]>([]);
-  const [dailyWellness, setDailyWellness] = useState<DailyWellness[]>([]);
+  const [state, setState] = useState<PersistedState>(loadState);
   const [watchNotification, setWatchNotification] = useState<{ title: string; taskId: string } | null>(null);
   const [watchTrainingTask, setWatchTrainingTask] = useState<PlanTask | null>(null);
+  const [today, setToday] = useState(todayStr);
 
+  const { planVersions, currentPlanId, records, dailyWellness } = state;
   const plan = planVersions.find((p) => p.id === currentPlanId) ?? null;
-  const today = new Date().toISOString().slice(0, 10);
+
+  useEffect(() => saveState(state), [state]);
+
+  // 跨过午夜时刷新“今天”
+  useEffect(() => {
+    const timer = setInterval(() => setToday(todayStr()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const update = (fn: (s: PersistedState) => PersistedState) => setState(fn);
 
   function handleImport(newPlan: PlanVersion) {
-    setPlanVersions((prev) => [...prev, newPlan]);
-    setCurrentPlanId(newPlan.id);
+    update((s) => ({ ...s, planVersions: [...s.planVersions, newPlan], currentPlanId: newPlan.id }));
   }
 
   function handleSelectVersion(id: string) {
-    setCurrentPlanId(id);
+    update((s) => ({ ...s, currentPlanId: id }));
   }
 
-  function handleRecord(r: Omit<ExecutionRecord, "id">) {
-    setRecords((prev) => {
-      const filtered = prev.filter((x) => !(x.task_id === r.task_id && x.date === r.date));
-      return [...filtered, { ...r, id: `${r.task_id}-${r.date}-${Date.now()}` }];
+  function handleRecord(draft: RecordDraft, source: RecordSource = "phone") {
+    if (!plan) return;
+    const now = new Date().toISOString();
+    update((s) => {
+      const existing = findRecord(s.records, draft.task_id, today);
+      const record: ExecutionRecord = {
+        ...draft,
+        id: existing?.id ?? newId(),
+        plan_version_id: plan.id,
+        date: today,
+        source,
+        completed_at: draft.status === "completed" || draft.status === "partial" ? now : undefined,
+        updated_at: now,
+      };
+      return { ...s, records: [...s.records.filter((r) => r !== existing), record] };
     });
   }
 
   function handleDailyFatigue(score: number) {
-    setDailyWellness((prev) => {
-      const filtered = prev.filter((d) => d.date !== today);
-      return [...filtered, { date: today, fatigue_score: score }];
-    });
+    update((s) => ({
+      ...s,
+      dailyWellness: [
+        ...s.dailyWellness.filter((d) => d.date !== today),
+        { date: today, fatigue_score: score, updated_at: new Date().toISOString() },
+      ],
+    }));
+  }
+
+  function handleUpdateRecord(id: string, patch: Partial<ExecutionRecord>) {
+    update((s) => ({
+      ...s,
+      records: s.records.map((r) => (r.id === id ? { ...r, ...patch, updated_at: new Date().toISOString() } : r)),
+    }));
+  }
+
+  function handleDeleteRecord(id: string) {
+    update((s) => ({ ...s, records: s.records.filter((r) => r.id !== id) }));
   }
 
   function handleTriggerNotification(task: PlanTask) {
     setWatchNotification({ title: task.title, taskId: task.id });
   }
 
-  const todayTasks = plan?.tasks.filter((t) => isTaskToday(t, today)) ?? [];
-  const remainingCount = todayTasks.filter((t) => {
-    const r = records.find((rec) => rec.task_id === t.id && rec.date === today);
-    return !r || r.status !== "completed";
-  }).length;
+  const todayTasks = plan ? getTasksOnDate(plan, today) : [];
+  const remainingCount = todayTasks.filter((t) => !isDone(findRecord(records, t.id, today))).length;
 
-  function getFirstWorkoutTask(): PlanTask | null {
-    const pending = todayTasks.filter((t) => {
-      const r = records.find((rec) => rec.task_id === t.id && rec.date === today);
-      return (!r || r.status !== "completed") && t.type === "workout" && t.exercises && t.exercises.length > 0;
-    });
-    return pending[0] ?? null;
+  function startWatchTraining(task: PlanTask | undefined) {
+    if (plan && task && getExercisesForDate(plan, task, today).length > 0) setWatchTrainingTask(task);
   }
 
   function handleWatchStartTraining() {
-    const task = getFirstWorkoutTask();
-    if (task) setWatchTrainingTask(task);
+    startWatchTraining(todayTasks.find((t) => t.type === "workout" && !isDone(findRecord(records, t.id, today))));
   }
 
-  function handleWatchTrainingComplete(actual: ActualExercise[], _durationMinutes: number) {
-    if (!watchTrainingTask) return;
-    handleRecord({
-      task_id: watchTrainingTask.id,
-      date: today,
-      status: "completed",
-      completed_at: new Date().toISOString(),
-      actual,
-      notes: "（Apple Watch 训练模式）",
-    });
+  function handleWatchTrainingComplete(sets: SetLog[], startedAt: string) {
+    if (!watchTrainingTask || !plan) return;
+    const planned = getExercisesForDate(plan, watchTrainingTask, today);
+    handleRecord(
+      {
+        task_id: watchTrainingTask.id,
+        status: statusForSets(planned, sets),
+        sets,
+        started_at: startedAt,
+        notes: "",
+      },
+      "watch"
+    );
     setWatchTrainingTask(null);
   }
 
   function handleNotificationStart(taskId: string) {
-    const task = plan?.tasks.find((t) => t.id === taskId);
-    if (task?.exercises?.length) {
-      setWatchTrainingTask(task);
-    }
-  }
-
-  function handleUpdateRecord(id: string, patch: Partial<ExecutionRecord>) {
-    setRecords((prev) => prev.map((r) => r.id === id ? { ...r, ...patch } : r));
-  }
-
-  function handleDeleteRecord(id: string) {
-    setRecords((prev) => prev.filter((r) => r.id !== id));
+    startWatchTraining(plan?.tasks.find((t) => t.id === taskId));
   }
 
   const todayFatigue = dailyWellness.find((d) => d.date === today)?.fatigue_score;
@@ -162,6 +185,7 @@ export default function App() {
                 <DashboardView
                   plan={plan}
                   records={records}
+                  today={today}
                   onStartToday={() => setHomeView("today")}
                 />
               )}
@@ -169,6 +193,7 @@ export default function App() {
                 <TodayView
                   plan={plan}
                   records={records}
+                  today={today}
                   dailyFatigue={todayFatigue}
                   onDailyFatigueChange={handleDailyFatigue}
                   onRecord={handleRecord}
@@ -181,6 +206,7 @@ export default function App() {
                   onImport={handleImport}
                   currentPlan={plan}
                   existingVersions={planVersions}
+                  today={today}
                 />
               )}
               {tab === "versions" && (
@@ -192,15 +218,16 @@ export default function App() {
               )}
               {tab === "history" && (
                 <HistoryView
-                  plan={plan}
+                  versions={planVersions}
                   records={records}
+                  today={today}
                   dailyWellness={dailyWellness}
                   onUpdateRecord={handleUpdateRecord}
                   onDeleteRecord={handleDeleteRecord}
                 />
               )}
               {tab === "export" && (
-                <ExportView plan={plan} records={records} dailyWellness={dailyWellness} />
+                <ExportView plan={plan} versions={planVersions} records={records} dailyWellness={dailyWellness} today={today} />
               )}
             </div>
 
@@ -237,6 +264,7 @@ export default function App() {
             remaining={remainingCount}
             total={todayTasks.length}
             trainingTask={watchTrainingTask}
+            trainingExercises={plan && watchTrainingTask ? getExercisesForDate(plan, watchTrainingTask, today) : []}
             onStartTraining={handleWatchStartTraining}
             onTrainingComplete={handleWatchTrainingComplete}
             onExitTraining={() => setWatchTrainingTask(null)}

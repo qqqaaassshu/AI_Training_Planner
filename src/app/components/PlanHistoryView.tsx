@@ -1,7 +1,14 @@
 import { useState } from "react";
 import { GitBranch, ChevronRight, ArrowLeftRight } from "lucide-react";
-import type { PlanVersion } from "../types";
-import { comparePlanVersions } from "../utils/plan";
+import type { PlanSource, PlanVersion } from "../types";
+import { comparePlanVersions, formatExerciseTarget } from "../utils/plan";
+
+const SOURCE_LABEL: Record<PlanSource, string> = {
+  json_import: "JSON 导入",
+  nl_import: "自然语言导入",
+  ai_analysis: "AI 调整",
+  manual: "手动",
+};
 
 interface PlanHistoryViewProps {
   versions: PlanVersion[];
@@ -123,8 +130,16 @@ export function PlanHistoryView({ versions, currentVersionId, onSelectVersion }:
             {viewing.plan_name} V{viewing.version}
           </h2>
           <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>
-            创建于 {new Date(viewing.created_at).toLocaleDateString("zh-CN")}
+            创建于 {new Date(viewing.created_at).toLocaleDateString("zh-CN")} · {SOURCE_LABEL[viewing.source] ?? viewing.source}
           </p>
+          <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 2 }}>
+            {viewing.start_date} ~ {viewing.end_date ?? "未设置结束日期"}
+          </p>
+          {viewing.change_note && (
+            <p className="mt-3 rounded-xl px-3 py-2" style={{ background: "rgba(255,107,53,0.08)", fontSize: 12, color: "var(--foreground)" }}>
+              调整说明：{viewing.change_note}
+            </p>
+          )}
           {viewing.ai_summary && (
             <p className="mt-3 rounded-xl px-3 py-2" style={{ background: "var(--secondary)", fontSize: 12, color: "var(--muted-foreground)" }}>
               {viewing.ai_summary}
@@ -139,12 +154,24 @@ export function PlanHistoryView({ versions, currentVersionId, onSelectVersion }:
               {t.exercises && (
                 <div className="mt-2 space-y-1">
                   {t.exercises.map((e) => (
-                    <p key={e.name} style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
-                      {e.name} {e.sets}×{e.reps}
+                    <p key={e.id} style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+                      {e.name} {formatExerciseTarget(e)}
                     </p>
                   ))}
                 </div>
               )}
+              {t.phases?.map((p) => (
+                <div key={`${p.week_from}-${p.week_to}`} className="mt-2 space-y-1">
+                  <p style={{ fontSize: 11, color: "var(--primary)" }}>
+                    第 {p.week_from}–{p.week_to} 周
+                  </p>
+                  {p.exercises.map((e) => (
+                    <p key={e.id} style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+                      {e.name} {formatExerciseTarget(e)}
+                    </p>
+                  ))}
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -228,7 +255,7 @@ export function PlanHistoryView({ versions, currentVersionId, onSelectVersion }:
                   )}
                 </p>
                 <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 2 }}>
-                  {v.plan_name} · {v.tasks.length} 个任务
+                  {v.plan_name} · {v.tasks.length} 个任务 · {SOURCE_LABEL[v.source] ?? v.source}
                 </p>
               </div>
               <ChevronRight size={18} color="var(--muted-foreground)" />

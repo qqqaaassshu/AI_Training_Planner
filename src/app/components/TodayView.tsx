@@ -1,105 +1,61 @@
 import { useState } from "react";
-import { CheckCircle2, Circle, ChevronDown, ChevronUp, Clock, SkipForward, Bell, ArrowLeft } from "lucide-react";
-import type { PlanVersion, PlanTask, ExecutionRecord, ActualExercise } from "../types";
-import { isTaskToday } from "../utils/plan";
+import { CheckCircle2, Circle, ChevronDown, ChevronUp, Clock, SkipForward, Bell, ArrowLeft, CircleDashed } from "lucide-react";
+import type { PlanVersion, PlanTask, ExecutionRecord, SkipReason } from "../types";
+import type { RecordDraft } from "../App";
+import { expandSets, findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "../utils/plan";
 import { ScoreSlider } from "./ScoreSlider";
+import { SetEditor, SetList, SKIP_REASONS, skipReasonLabel, summariesFromPlan } from "./SetEditor";
 
 interface TodayViewProps {
   plan: PlanVersion | null;
   records: ExecutionRecord[];
+  today: string;
   dailyFatigue: number | undefined;
   onDailyFatigueChange: (score: number) => void;
-  onRecord: (record: Omit<ExecutionRecord, "id">) => void;
+  onRecord: (record: RecordDraft) => void;
   onTriggerNotification: (task: PlanTask) => void;
   onBack?: () => void;
 }
 
-function getRecordForTask(taskId: string, records: ExecutionRecord[]): ExecutionRecord | undefined {
-  const today = new Date().toISOString().slice(0, 10);
-  return records.find((r) => r.task_id === taskId && r.date === today);
-}
-
-interface ExerciseLogProps {
-  exercises: { name: string; sets: number; reps: number }[];
-  actual: ActualExercise[];
-  onChange: (actual: ActualExercise[]) => void;
-}
-
-function ExerciseLog({ exercises, actual, onChange }: ExerciseLogProps) {
-  function update(i: number, field: "sets" | "reps", value: number) {
-    const next = actual.map((a, idx) => idx === i ? { ...a, [field]: value } : a);
-    onChange(next);
-  }
-
-  return (
-    <div className="space-y-2 mt-3">
-      {exercises.map((ex, i) => (
-        <div key={ex.name} className="rounded-xl p-3" style={{ background: "var(--secondary)" }}>
-          <div className="flex items-center justify-between mb-2">
-            <span style={{ fontSize: 13, color: "var(--foreground)", fontWeight: 500 }}>{ex.name}</span>
-            <span style={{ fontSize: 11, color: "var(--muted-foreground)", fontFamily: "'DM Mono', monospace" }}>
-              计划 {ex.sets}×{ex.reps}
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>实际组数</span>
-              <input
-                type="number"
-                value={actual[i]?.sets ?? ex.sets}
-                onChange={(e) => update(i, "sets", parseInt(e.target.value) || 0)}
-                className="w-12 text-center rounded-lg py-1 outline-none"
-                style={{ background: "var(--muted)", color: "var(--foreground)", fontSize: 13, border: "1px solid var(--border)", fontFamily: "'DM Mono', monospace" }}
-              />
-            </div>
-            <span style={{ color: "var(--muted-foreground)" }}>×</span>
-            <div className="flex items-center gap-2">
-              <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>次数</span>
-              <input
-                type="number"
-                value={actual[i]?.reps ?? ex.reps}
-                onChange={(e) => update(i, "reps", parseInt(e.target.value) || 0)}
-                className="w-12 text-center rounded-lg py-1 outline-none"
-                style={{ background: "var(--muted)", color: "var(--foreground)", fontSize: 13, border: "1px solid var(--border)", fontFamily: "'DM Mono', monospace" }}
-              />
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 interface TaskCardProps {
+  plan: PlanVersion;
   task: PlanTask;
+  today: string;
   record: ExecutionRecord | undefined;
-  onRecord: (r: Omit<ExecutionRecord, "id">) => void;
+  onRecord: (r: RecordDraft) => void;
   onTriggerNotification: (task: PlanTask) => void;
 }
 
-function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardProps) {
+function TaskCard({ plan, task, today, record, onRecord, onTriggerNotification }: TaskCardProps) {
+  const planned = getExercisesForDate(plan, task, today);
   const [expanded, setExpanded] = useState(false);
+  const [choosingSkip, setChoosingSkip] = useState(false);
   const [notes, setNotes] = useState("");
   const [painScore, setPainScore] = useState<number | undefined>(undefined);
-  const [actual, setActual] = useState<ActualExercise[]>(
-    task.exercises?.map((e) => ({ name: e.name, sets: e.sets, reps: e.reps })) ?? []
-  );
+  const [items, setItems] = useState(() => summariesFromPlan(planned));
 
-  const today = new Date().toISOString().slice(0, 10);
-  const isDone = record?.status === "completed";
+  const done = isDone(record);
+  const isPartial = record?.status === "partial";
   const isSkipped = record?.status === "skipped";
+  // “延后”的任务仍可再次完成
+  const open = !record || record.status === "snoozed";
 
-  function submit(status: "completed" | "skipped" | "snoozed") {
-    onRecord({
-      task_id: task.id,
-      date: today,
-      status,
-      completed_at: new Date().toISOString(),
-      actual: task.exercises ? actual : undefined,
-      notes: notes,
-      pain_score: status === "completed" ? painScore : undefined,
-    });
+  function submit(status: "done" | "skipped" | "snoozed", skip_reason?: SkipReason) {
+    const startedAt = new Date().toISOString();
+    if (status === "done") {
+      const sets = planned.length > 0 ? expandSets(items.filter((it) => it.sets > 0), startedAt) : undefined;
+      onRecord({
+        task_id: task.id,
+        status: sets ? statusForSets(planned, sets) : "completed",
+        sets,
+        notes,
+        pain_score: task.type === "workout" ? painScore : undefined,
+      });
+    } else {
+      onRecord({ task_id: task.id, status, skip_reason, notes });
+    }
     setExpanded(false);
+    setChoosingSkip(false);
   }
 
   return (
@@ -107,38 +63,42 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
       className="rounded-2xl overflow-hidden transition-all"
       style={{
         background: "var(--card)",
-        border: `1px solid ${isDone ? "rgba(74,222,128,0.25)" : isSkipped ? "rgba(255,255,255,0.05)" : "var(--border)"}`,
+        border: `1px solid ${done ? "rgba(74,222,128,0.25)" : isSkipped ? "rgba(255,255,255,0.05)" : "var(--border)"}`,
         opacity: isSkipped ? 0.5 : 1,
       }}
     >
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3 flex-1 min-w-0">
-            <button
-              onClick={() => !isDone && !isSkipped && setExpanded(true)}
-              className="mt-0.5 flex-shrink-0"
-            >
-              {isDone ? (
+            <button onClick={() => open && setExpanded(true)} className="mt-0.5 flex-shrink-0">
+              {isPartial ? (
+                <CircleDashed size={22} color="#4ade80" />
+              ) : done ? (
                 <CheckCircle2 size={22} color="#4ade80" />
               ) : (
                 <Circle size={22} color={isSkipped ? "#444" : "#666"} />
               )}
             </button>
             <div className="flex-1 min-w-0">
-              <p style={{ color: isDone ? "#666" : "var(--foreground)", textDecoration: isDone || isSkipped ? "line-through" : "none", fontWeight: 500 }}>
+              <p style={{ color: done ? "#666" : "var(--foreground)", textDecoration: done || isSkipped ? "line-through" : "none", fontWeight: 500 }}>
                 {task.title}
               </p>
-              {task.schedule.time && (
-                <p className="flex items-center gap-1 mt-0.5" style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
-                  <Clock size={11} />
-                  {task.schedule.time}
-                </p>
-              )}
+              <p className="flex items-center gap-1 mt-0.5" style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+                {task.schedule.time && (
+                  <>
+                    <Clock size={11} />
+                    {task.schedule.time}
+                  </>
+                )}
+                {isPartial && <span>· 部分完成</span>}
+                {record?.status === "snoozed" && <span>· 已延后</span>}
+                {isSkipped && record?.skip_reason && <span>· 跳过（{skipReasonLabel(record.skip_reason)}）</span>}
+              </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0">
-            {task.reminder && !record && (
+            {task.reminder && open && (
               <button
                 onClick={() => onTriggerNotification(task)}
                 title="模拟 Watch 通知"
@@ -148,7 +108,7 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
                 <Bell size={14} color="var(--muted-foreground)" />
               </button>
             )}
-            {task.type === "workout" && task.exercises && !record && (
+            {planned.length > 0 && open && (
               <button
                 onClick={() => setExpanded((x) => !x)}
                 className="rounded-xl p-1.5 transition-opacity hover:opacity-80"
@@ -157,7 +117,7 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
                 {expanded ? <ChevronUp size={14} color="var(--muted-foreground)" /> : <ChevronDown size={14} color="var(--muted-foreground)" />}
               </button>
             )}
-            {!record && !expanded && (
+            {open && !expanded && (
               <button
                 onClick={() => setExpanded(true)}
                 className="rounded-xl px-2 py-1"
@@ -169,21 +129,14 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
           </div>
         </div>
 
-        {task.type === "workout" && task.exercises && record && record.actual && (
-          <div className="mt-3 space-y-1">
-            {record.actual.map((a) => (
-              <div key={a.name} className="flex items-center justify-between">
-                <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{a.name}</span>
-                <span style={{ fontSize: 12, color: "#4ade80", fontFamily: "'DM Mono', monospace" }}>
-                  {a.sets}×{a.reps}
-                </span>
-              </div>
-            ))}
+        {record?.sets && record.sets.length > 0 && (
+          <div className="mt-3">
+            <SetList sets={record.sets} />
           </div>
         )}
 
         {record?.pain_score !== undefined && (
-          <p className="mt-2" style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+          <p className="mt-2" style={{ fontSize: 12, color: record.pain_score >= 7 ? "#e53e3e" : "var(--muted-foreground)" }}>
             疼痛评分：{record.pain_score}/10
           </p>
         )}
@@ -195,20 +148,20 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
         )}
       </div>
 
-      {expanded && !record && (
+      {expanded && open && (
         <div className="px-4 pb-4 space-y-3">
-          {task.exercises && (
-            <ExerciseLog exercises={task.exercises} actual={actual} onChange={setActual} />
-          )}
+          {planned.length > 0 && <SetEditor items={items} onChange={setItems} planned={planned} />}
 
-          <ScoreSlider
-            label="疼痛程度 (0-10)"
-            value={painScore}
-            onChange={setPainScore}
-            hint="完成后记录当前疼痛感受"
-            minLabel="无痛"
-            maxLabel="剧痛"
-          />
+          {task.type === "workout" && (
+            <ScoreSlider
+              label="疼痛程度 (0-10)"
+              value={painScore}
+              onChange={setPainScore}
+              hint={painScore !== undefined && painScore >= 7 ? "⚠️ 疼痛较明显，建议停止训练并观察，必要时就医" : "完成后记录当前疼痛感受"}
+              minLabel="无痛"
+              maxLabel="剧痛"
+            />
+          )}
 
           <textarea
             value={notes}
@@ -216,40 +169,56 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
             placeholder="添加备注（状态、感受…）"
             rows={2}
             className="w-full rounded-xl p-3 resize-none outline-none"
-            style={{
-              background: "var(--secondary)",
-              color: "var(--foreground)",
-              border: "1px solid var(--border)",
-              fontSize: 13,
-            }}
+            style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)", fontSize: 13 }}
           />
 
-          <div className="flex gap-2">
-            <button
-              onClick={() => submit("completed")}
-              className="flex-1 rounded-xl py-2.5 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-90"
-              style={{ background: "#4ade80", color: "#000", fontSize: 13, fontWeight: 600 }}
-            >
-              <CheckCircle2 size={14} />
-              完成
-            </button>
-            <button
-              onClick={() => submit("snoozed")}
-              className="rounded-xl py-2.5 px-4 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-80"
-              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", fontSize: 13 }}
-            >
-              <Clock size={14} />
-              延后
-            </button>
-            <button
-              onClick={() => submit("skipped")}
-              className="rounded-xl py-2.5 px-4 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-80"
-              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", fontSize: 13 }}
-            >
-              <SkipForward size={14} />
-              跳过
-            </button>
-          </div>
+          {choosingSkip ? (
+            <div className="space-y-2">
+              <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>跳过原因</p>
+              <div className="flex gap-2">
+                {SKIP_REASONS.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => submit("skipped", r.id)}
+                    className="flex-1 rounded-xl py-2 transition-opacity hover:opacity-80"
+                    style={{ background: "var(--secondary)", color: "var(--foreground)", fontSize: 12 }}
+                  >
+                    {r.label}
+                  </button>
+                ))}
+              </div>
+              <button onClick={() => setChoosingSkip(false)} style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
+                取消
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                onClick={() => submit("done")}
+                className="flex-1 rounded-xl py-2.5 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-90"
+                style={{ background: "#4ade80", color: "#000", fontSize: 13, fontWeight: 600 }}
+              >
+                <CheckCircle2 size={14} />
+                完成
+              </button>
+              <button
+                onClick={() => submit("snoozed")}
+                className="rounded-xl py-2.5 px-4 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-80"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", fontSize: 13 }}
+              >
+                <Clock size={14} />
+                延后
+              </button>
+              <button
+                onClick={() => setChoosingSkip(true)}
+                className="rounded-xl py-2.5 px-4 flex items-center justify-center gap-1.5 transition-opacity hover:opacity-80"
+                style={{ background: "var(--secondary)", color: "var(--muted-foreground)", fontSize: 13 }}
+              >
+                <SkipForward size={14} />
+                跳过
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -259,6 +228,7 @@ function TaskCard({ task, record, onRecord, onTriggerNotification }: TaskCardPro
 export function TodayView({
   plan,
   records,
+  today,
   dailyFatigue,
   onDailyFatigueChange,
   onRecord,
@@ -277,16 +247,12 @@ export function TodayView({
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const todayTasks = plan.tasks.filter((t) => isTaskToday(t, today));
+  const todayTasks = getTasksOnDate(plan, today);
   const workouts = todayTasks.filter((t) => t.type === "workout");
   const habits = todayTasks.filter((t) => t.type === "habit");
-  const completedCount = todayTasks.filter((t) => {
-    const r = getRecordForTask(t.id, records);
-    return r?.status === "completed";
-  }).length;
+  const completedCount = todayTasks.filter((t) => isDone(findRecord(records, t.id, today))).length;
 
-  const dateStr = new Date().toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
+  const dateStr = new Date(`${today}T12:00:00`).toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "long" });
 
   return (
     <div className="space-y-5">
@@ -342,8 +308,10 @@ export function TodayView({
           {workouts.map((t) => (
             <TaskCard
               key={t.id}
+              plan={plan}
               task={t}
-              record={getRecordForTask(t.id, records)}
+              today={today}
+              record={findRecord(records, t.id, today)}
               onRecord={onRecord}
               onTriggerNotification={onTriggerNotification}
             />
@@ -357,8 +325,10 @@ export function TodayView({
           {habits.map((t) => (
             <TaskCard
               key={t.id}
+              plan={plan}
               task={t}
-              record={getRecordForTask(t.id, records)}
+              today={today}
+              record={findRecord(records, t.id, today)}
               onRecord={onRecord}
               onTriggerNotification={onTriggerNotification}
             />

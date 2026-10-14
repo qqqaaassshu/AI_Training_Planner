@@ -1,103 +1,90 @@
 import { useState } from "react";
-import { Upload, AlertCircle, CheckCircle2 } from "lucide-react";
-import type { PlanVersion } from "../types";
-import { normalizeImportedPlan } from "../utils/plan";
+import { Upload, AlertCircle, CheckCircle2, AlertTriangle } from "lucide-react";
+import type { PlanSource, PlanVersion } from "../types";
+import samplePlan from "../fixtures/samplePlan.json";
+import { createPlanVersion } from "../utils/plan";
 import { parseNaturalLanguagePlan } from "../utils/nlImport";
+import { validatePlanInput } from "../utils/validate";
+import { addDays, weekdayOf } from "../utils/date";
 
-const SAMPLE_PLAN = `{
-  "plan_name": "12周体能恢复计划",
-  "start_date": "2026-06-15",
-  "end_date": "2026-09-07",
-  "ai_summary": "改善睡眠，恢复手腕，提升体能",
-  "tasks": [
-    {
-      "id": "t1",
-      "title": "身体维护训练A",
-      "type": "workout",
-      "schedule": { "weekday": [1, 3, 5], "time": "07:30" },
-      "exercises": [
-        { "name": "深蹲", "sets": 3, "reps": 10 },
-        { "name": "臀桥", "sets": 3, "reps": 12 },
-        { "name": "Dead Bug", "sets": 3, "reps": 8 }
-      ],
-      "reminder": true
-    },
-    {
-      "id": "t2",
-      "title": "散步20分钟",
-      "type": "habit",
-      "schedule": { "daily": true, "time": "18:00" },
-      "reminder": true
-    },
-    {
-      "id": "t3",
-      "title": "水果1份",
-      "type": "habit",
-      "schedule": { "daily": true, "time": "12:00" },
-      "reminder": false
-    },
-    {
-      "id": "t4",
-      "title": "22:30准备睡觉",
-      "type": "habit",
-      "schedule": { "daily": true, "time": "22:30" },
-      "reminder": true
-    }
-  ]
-}`;
+/** 示例计划：从本周一开始的 12 周 */
+function buildSamples(today: string) {
+  const monday = addDays(today, -((weekdayOf(today) + 6) % 7));
+  const json = JSON.stringify({ ...samplePlan, start_date: monday, end_date: addDays(monday, 83) }, null, 2);
+  const natural = `12周恢复计划
+开始日期：${monday}
 
-const SAMPLE_NL = `12周恢复计划
-开始日期：2026-06-15
-
-周二训练：
+周一三五 07:30 力量训练：
 深蹲3组10次
 臀桥3组12次
 Dead Bug 3组8次
-
-周四训练：
-俯卧撑3组8次
 平板支撑3组30秒
+
+周二四训练：
+俯卧撑3组8次
+靠墙静蹲3组45秒
 
 每日习惯：
 散步20分钟
 22:30准备睡觉`;
+  return { json, natural };
+}
 
 interface ImportPlanProps {
   onImport: (plan: PlanVersion) => void;
   currentPlan: PlanVersion | null;
   existingVersions: PlanVersion[];
+  today: string;
 }
 
-export function ImportPlan({ onImport, currentPlan, existingVersions }: ImportPlanProps) {
+export function ImportPlan({ onImport, currentPlan, existingVersions, today }: ImportPlanProps) {
   const [mode, setMode] = useState<"json" | "natural">("json");
   const [text, setText] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [success, setSuccess] = useState(false);
 
-  function handleImport() {
-    setError(null);
+  function reset() {
+    setErrors([]);
+    setWarnings([]);
     setSuccess(false);
+  }
+
+  function handleImport() {
+    reset();
+    let raw: unknown;
+    let source: PlanSource;
+    let nlWarnings: string[] = [];
     try {
-      let raw: Record<string, unknown>;
       if (mode === "json") {
-        raw = JSON.parse(text) as Record<string, unknown>;
-        if (!raw.plan_name || !raw.tasks) throw new Error("缺少 plan_name 或 tasks 字段");
+        raw = JSON.parse(text);
+        source = "json_import";
       } else {
-        raw = parseNaturalLanguagePlan(text) as unknown as Record<string, unknown>;
+        const parsed = parseNaturalLanguagePlan(text, today);
+        raw = parsed.plan;
+        nlWarnings = parsed.warnings;
+        source = "nl_import";
       }
-      const version = normalizeImportedPlan(raw, existingVersions);
-      onImport(version);
-      setSuccess(true);
-      setText("");
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "格式错误");
+      setErrors([e instanceof SyntaxError ? `JSON 格式错误：${e.message}` : e instanceof Error ? e.message : "格式错误"]);
+      return;
     }
+
+    const result = validatePlanInput(raw);
+    if (!result.ok) {
+      setErrors(result.errors);
+      return;
+    }
+    onImport(createPlanVersion(result.value, existingVersions, { source, parent: currentPlan }));
+    setWarnings(nlWarnings);
+    setSuccess(true);
+    setText("");
   }
 
   function loadSample() {
-    setText(mode === "json" ? SAMPLE_PLAN : SAMPLE_NL);
-    setError(null);
-    setSuccess(false);
+    const samples = buildSamples(today);
+    setText(mode === "json" ? samples.json : samples.natural);
+    reset();
   }
 
   return (
@@ -127,7 +114,7 @@ export function ImportPlan({ onImport, currentPlan, existingVersions }: ImportPl
         {(["json", "natural"] as const).map((m) => (
           <button
             key={m}
-            onClick={() => { setMode(m); setError(null); setSuccess(false); }}
+            onClick={() => { setMode(m); reset(); }}
             className="flex-1 rounded-xl py-2 transition-all"
             style={{
               background: mode === m ? "var(--primary)" : "transparent",
@@ -144,8 +131,8 @@ export function ImportPlan({ onImport, currentPlan, existingVersions }: ImportPl
       <div className="space-y-2">
         <textarea
           value={text}
-          onChange={(e) => { setText(e.target.value); setError(null); setSuccess(false); }}
-          placeholder={mode === "json" ? "粘贴 JSON 计划..." : "粘贴自然语言计划，例如：\n周二训练：\n深蹲3组10次\n臀桥3组12次"}
+          onChange={(e) => { setText(e.target.value); reset(); }}
+          placeholder={mode === "json" ? "粘贴 JSON 计划..." : "粘贴自然语言计划，例如：\n周二训练：\n深蹲3组10次 20kg\n平板支撑3组30秒"}
           rows={12}
           className="w-full rounded-2xl p-4 resize-none outline-none"
           style={{
@@ -157,16 +144,33 @@ export function ImportPlan({ onImport, currentPlan, existingVersions }: ImportPl
             lineHeight: 1.6,
           }}
         />
-        {error && (
-          <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ background: "#2a1a1a", border: "1px solid rgba(229,62,62,0.3)" }}>
-            <AlertCircle size={14} color="#e53e3e" />
-            <span style={{ fontSize: 12, color: "#e53e3e" }}>{error}</span>
+        {errors.length > 0 && (
+          <div className="rounded-xl px-3 py-2 space-y-1" style={{ background: "#2a1a1a", border: "1px solid rgba(229,62,62,0.3)" }}>
+            <div className="flex items-center gap-2">
+              <AlertCircle size={14} color="#e53e3e" />
+              <span style={{ fontSize: 12, color: "#e53e3e", fontWeight: 600 }}>导入失败，请修正以下问题：</span>
+            </div>
+            {errors.slice(0, 8).map((e) => (
+              <p key={e} style={{ fontSize: 11, color: "#e88", fontFamily: "'DM Mono', monospace" }}>· {e}</p>
+            ))}
+            {errors.length > 8 && <p style={{ fontSize: 11, color: "#e88" }}>…还有 {errors.length - 8} 项</p>}
           </div>
         )}
         {success && (
           <div className="flex items-center gap-2 rounded-xl px-3 py-2" style={{ background: "#1a2a1a", border: "1px solid rgba(74,222,128,0.3)" }}>
             <CheckCircle2 size={14} color="#4ade80" />
             <span style={{ fontSize: 12, color: "#4ade80" }}>计划导入成功！已创建新版本</span>
+          </div>
+        )}
+        {warnings.length > 0 && (
+          <div className="rounded-xl px-3 py-2 space-y-1" style={{ background: "#2a2410", border: "1px solid rgba(245,158,11,0.3)" }}>
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={14} color="#f59e0b" />
+              <span style={{ fontSize: 12, color: "#f59e0b", fontWeight: 600 }}>以下内容未能识别，未导入：</span>
+            </div>
+            {warnings.map((w) => (
+              <p key={w} style={{ fontSize: 11, color: "#d9b26a" }}>· {w}</p>
+            ))}
           </div>
         )}
       </div>

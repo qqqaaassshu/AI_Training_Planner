@@ -1,21 +1,15 @@
 import { ChevronRight, Target } from "lucide-react";
-import type { PlanVersion, ExecutionRecord, PlanTask } from "../types";
-import { computePlanCompletionRate, getCurrentWeek, getTotalWeeks, isTaskToday } from "../utils/plan";
+import type { PlanVersion, ExecutionRecord } from "../types";
+import { buildExportSummary, findRecord, getCurrentWeek, getTasksOnDate, getTotalWeeks, isDone } from "../utils/plan";
 
 interface DashboardViewProps {
   plan: PlanVersion | null;
   records: ExecutionRecord[];
+  today: string;
   onStartToday: () => void;
 }
 
-function getRemainingToday(tasks: PlanTask[], records: ExecutionRecord[], today: string): number {
-  return tasks.filter((t) => {
-    const r = records.find((rec) => rec.task_id === t.id && rec.date === today);
-    return !r || r.status !== "completed";
-  }).length;
-}
-
-export function DashboardView({ plan, records, onStartToday }: DashboardViewProps) {
+export function DashboardView({ plan, records, today, onStartToday }: DashboardViewProps) {
   if (!plan) {
     return (
       <div className="flex flex-col items-center justify-center py-20 space-y-4">
@@ -28,10 +22,9 @@ export function DashboardView({ plan, records, onStartToday }: DashboardViewProp
     );
   }
 
-  const today = new Date().toISOString().slice(0, 10);
-  const todayTasks = plan.tasks.filter((t) => isTaskToday(t, today));
-  const remaining = getRemainingToday(todayTasks, records, today);
-  const completionRate = computePlanCompletionRate(plan, records, today);
+  const todayTasks = getTasksOnDate(plan, today);
+  const remaining = todayTasks.filter((t) => !isDone(findRecord(records, t.id, today))).length;
+  const completionRate = buildExportSummary(plan, records, [], today).completion_rate;
   const currentWeek = getCurrentWeek(plan, today);
   const totalWeeks = getTotalWeeks(plan);
 
@@ -54,7 +47,9 @@ export function DashboardView({ plan, records, onStartToday }: DashboardViewProp
               {plan.plan_name} V{plan.version}
             </h2>
             <p style={{ fontSize: 13, color: "var(--muted-foreground)", marginTop: 4 }}>
-              第 {currentWeek} 周 / 共 {totalWeeks} 周
+              {today < plan.start_date
+                ? `${plan.start_date} 开始 · 共 ${totalWeeks} 周`
+                : `第 ${currentWeek} 周 / 共 ${totalWeeks} 周`}
             </p>
           </div>
         </div>

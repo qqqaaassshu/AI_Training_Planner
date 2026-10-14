@@ -1,66 +1,49 @@
 import { useState } from "react";
-import { CheckCircle2, SkipForward, Clock, Pencil, Plus, Trash2, Check, X } from "lucide-react";
-import type { PlanVersion, ExecutionRecord, ActualExercise, DailyWellness } from "../types";
+import { CheckCircle2, CircleDashed, SkipForward, Clock, Pencil, Plus, Check, X } from "lucide-react";
+import type { PlanVersion, ExecutionRecord, DailyWellness, PlanTask } from "../types";
+import { expandSets, getExercisesForDate, summarizeSets, type SetSummary } from "../utils/plan";
+import { SetEditor, SetList, skipReasonLabel, summariesFromPlan } from "./SetEditor";
 
 interface HistoryViewProps {
-  plan: PlanVersion | null;
+  versions: PlanVersion[];
   records: ExecutionRecord[];
+  today: string;
   dailyWellness: DailyWellness[];
   onUpdateRecord: (id: string, patch: Partial<ExecutionRecord>) => void;
   onDeleteRecord: (id: string) => void;
 }
 
-function statusIcon(status: ExecutionRecord["status"]) {
-  if (status === "completed") return <CheckCircle2 size={16} color="#4ade80" />;
-  if (status === "skipped") return <SkipForward size={16} color="#666" />;
-  return <Clock size={16} color="#f59e0b" />;
-}
+const STATUS: Record<ExecutionRecord["status"], { label: string; color: string; icon: JSX.Element }> = {
+  completed: { label: "完成", color: "#4ade80", icon: <CheckCircle2 size={16} color="#4ade80" /> },
+  partial: { label: "部分完成", color: "#a3e635", icon: <CircleDashed size={16} color="#a3e635" /> },
+  skipped: { label: "跳过", color: "#555", icon: <SkipForward size={16} color="#666" /> },
+  snoozed: { label: "延后", color: "#f59e0b", icon: <Clock size={16} color="#f59e0b" /> },
+};
 
-function statusLabel(status: ExecutionRecord["status"]) {
-  if (status === "completed") return "完成";
-  if (status === "skipped") return "跳过";
-  return "延后";
-}
-
-function statusColor(status: ExecutionRecord["status"]) {
-  if (status === "completed") return "#4ade80";
-  if (status === "skipped") return "#555";
-  return "#f59e0b";
+/** 记录对应的任务：优先查记录所属版本，其次任意版本（任务 id 跨版本稳定） */
+function findTask(versions: PlanVersion[], r: ExecutionRecord): { plan: PlanVersion; task: PlanTask } | undefined {
+  const ordered = [...versions].sort((a, b) => (a.id === r.plan_version_id ? -1 : b.id === r.plan_version_id ? 1 : b.version - a.version));
+  for (const plan of ordered) {
+    const task = plan.tasks.find((t) => t.id === r.task_id);
+    if (task) return { plan, task };
+  }
+  return undefined;
 }
 
 interface RecordDetailEditorProps {
   record: ExecutionRecord;
   taskTitle: string;
-  plannedExercises?: { name: string; sets: number; reps: number }[];
+  initial: SetSummary[];
   onSave: (patch: Partial<ExecutionRecord>) => void;
   onClose: () => void;
 }
 
-function RecordDetailEditor({ record, taskTitle, plannedExercises, onSave, onClose }: RecordDetailEditorProps) {
-  const [actual, setActual] = useState<ActualExercise[]>(
-    record.actual && record.actual.length > 0
-      ? record.actual
-      : plannedExercises?.map((e) => ({ name: e.name, sets: e.sets, reps: e.reps })) ?? []
-  );
+function RecordDetailEditor({ record, taskTitle, initial, onSave, onClose }: RecordDetailEditorProps) {
+  const [items, setItems] = useState(initial);
   const [notes, setNotes] = useState(record.notes ?? "");
-  const [newName, setNewName] = useState("");
-
-  function updateItem(i: number, field: keyof ActualExercise, value: string | number) {
-    setActual((prev) => prev.map((a, idx) => idx === i ? { ...a, [field]: value } : a));
-  }
-
-  function removeItem(i: number) {
-    setActual((prev) => prev.filter((_, idx) => idx !== i));
-  }
-
-  function addItem() {
-    const name = newName.trim() || "自定义动作";
-    setActual((prev) => [...prev, { name, sets: 3, reps: 10 }]);
-    setNewName("");
-  }
 
   function save() {
-    onSave({ actual, notes });
+    onSave({ sets: expandSets(items.filter((it) => it.sets > 0), record.completed_at ?? new Date().toISOString()), notes });
     onClose();
   }
 
@@ -71,7 +54,6 @@ function RecordDetailEditor({ record, taskTitle, plannedExercises, onSave, onClo
         style={{ background: "var(--card)", border: "1px solid var(--border)", maxHeight: "85vh", overflowY: "auto" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Handle */}
         <div className="flex justify-center -mt-1 mb-1">
           <div className="w-10 h-1 rounded-full" style={{ background: "var(--border)" }} />
         </div>
@@ -83,70 +65,11 @@ function RecordDetailEditor({ record, taskTitle, plannedExercises, onSave, onClo
           </button>
         </div>
 
-        {/* Exercise list */}
         <div className="space-y-2">
           <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>实际完成动作</p>
-
-          {actual.map((a, i) => (
-            <div key={i} className="rounded-xl p-3" style={{ background: "var(--secondary)", border: "1px solid var(--border)" }}>
-              <div className="flex items-center gap-2 mb-2">
-                <input
-                  value={a.name}
-                  onChange={(e) => updateItem(i, "name", e.target.value)}
-                  className="flex-1 rounded-lg px-2 py-1 outline-none"
-                  style={{ background: "var(--muted)", color: "var(--foreground)", fontSize: 13, border: "1px solid var(--border)" }}
-                />
-                <button onClick={() => removeItem(i)}>
-                  <Trash2 size={14} color="#666" />
-                </button>
-              </div>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>组数</span>
-                  <input
-                    type="number"
-                    value={a.sets}
-                    onChange={(e) => updateItem(i, "sets", parseInt(e.target.value) || 0)}
-                    className="w-14 text-center rounded-lg py-1 outline-none"
-                    style={{ background: "var(--muted)", color: "var(--foreground)", fontSize: 13, border: "1px solid var(--border)", fontFamily: "'DM Mono', monospace" }}
-                  />
-                </div>
-                <span style={{ color: "var(--muted-foreground)" }}>×</span>
-                <div className="flex items-center gap-2">
-                  <span style={{ fontSize: 11, color: "var(--muted-foreground)" }}>次数</span>
-                  <input
-                    type="number"
-                    value={a.reps}
-                    onChange={(e) => updateItem(i, "reps", parseInt(e.target.value) || 0)}
-                    className="w-14 text-center rounded-lg py-1 outline-none"
-                    style={{ background: "var(--muted)", color: "var(--foreground)", fontSize: 13, border: "1px solid var(--border)", fontFamily: "'DM Mono', monospace" }}
-                  />
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {/* Add new exercise */}
-          <div className="flex items-center gap-2">
-            <input
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && addItem()}
-              placeholder="添加动作名称…"
-              className="flex-1 rounded-xl px-3 py-2 outline-none"
-              style={{ background: "var(--secondary)", color: "var(--foreground)", border: "1px solid var(--border)", fontSize: 13 }}
-            />
-            <button
-              onClick={addItem}
-              className="rounded-xl px-3 py-2 flex items-center gap-1"
-              style={{ background: "var(--secondary)", color: "var(--muted-foreground)", border: "1px solid var(--border)" }}
-            >
-              <Plus size={14} />
-            </button>
-          </div>
+          <SetEditor items={items} onChange={setItems} editable />
         </div>
 
-        {/* Notes */}
         <div className="space-y-1.5">
           <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>备注</p>
           <textarea
@@ -172,9 +95,8 @@ function RecordDetailEditor({ record, taskTitle, plannedExercises, onSave, onClo
   );
 }
 
-export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDeleteRecord }: HistoryViewProps) {
+export function HistoryView({ versions, records, today, dailyWellness, onUpdateRecord, onDeleteRecord }: HistoryViewProps) {
   const [editingRecord, setEditingRecord] = useState<ExecutionRecord | null>(null);
-  const todayStr = new Date().toISOString().slice(0, 10);
 
   if (records.length === 0) {
     return (
@@ -195,13 +117,15 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
 
   const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
 
-  function getTask(taskId: string) {
-    return plan?.tasks.find((t) => t.id === taskId);
-  }
-
-  const completed = records.filter((r) => r.status === "completed").length;
+  const completed = records.filter((r) => r.status === "completed" || r.status === "partial").length;
   const skipped = records.filter((r) => r.status === "skipped").length;
   const rate = records.length > 0 ? Math.round((completed / records.length) * 100) : 0;
+
+  function editorInitial(r: ExecutionRecord): SetSummary[] {
+    if (r.sets && r.sets.length > 0) return summarizeSets(r.sets);
+    const found = findTask(versions, r);
+    return found ? summariesFromPlan(getExercisesForDate(found.plan, found.task, r.date)) : [];
+  }
 
   return (
     <>
@@ -225,7 +149,7 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
           <div key={date} className="space-y-2">
             <div className="flex items-center justify-between px-1">
               <p style={{ fontSize: 12, color: "var(--muted-foreground)" }}>
-                {new Date(date).toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}
+                {new Date(`${date}T12:00:00`).toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}
               </p>
               {dailyWellness.find((d) => d.date === date) && (
                 <p style={{ fontSize: 11, color: "var(--muted-foreground)" }}>
@@ -234,30 +158,24 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
               )}
             </div>
             {byDate[date].map((r) => {
-              const task = getTask(r.task_id);
-              const taskTitle = task?.title ?? r.task_id;
+              const task = findTask(versions, r)?.task;
+              const taskTitle = task?.title ?? "（已删除的任务）";
+              const status = STATUS[r.status];
+              const canEdit = r.status === "completed" || r.status === "partial";
 
               return (
                 <div key={r.id} className="rounded-2xl p-4" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex items-start gap-3 flex-1">
-                      <div className="mt-0.5">{statusIcon(r.status)}</div>
+                      <div className="mt-0.5">{status.icon}</div>
                       <div className="flex-1">
                         <p style={{ color: "var(--foreground)", fontWeight: 500, fontSize: 14 }}>{taskTitle}</p>
 
-                        {/* Exercise details */}
-                        {r.actual && r.actual.length > 0 ? (
-                          <div className="mt-2 space-y-1">
-                            {r.actual.map((a, i) => (
-                              <div key={i} className="flex items-center justify-between">
-                                <span style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{a.name}</span>
-                                <span style={{ fontSize: 12, fontFamily: "'DM Mono', monospace", color: "#4ade80" }}>
-                                  {a.sets}×{a.reps}
-                                </span>
-                              </div>
-                            ))}
+                        {r.sets && r.sets.length > 0 ? (
+                          <div className="mt-2">
+                            <SetList sets={r.sets} />
                           </div>
-                        ) : r.status === "completed" && task?.type === "workout" && (
+                        ) : canEdit && task?.type === "workout" && (
                           <button
                             onClick={() => setEditingRecord(r)}
                             className="mt-2 flex items-center gap-1 rounded-lg px-2 py-1 transition-opacity hover:opacity-80"
@@ -266,6 +184,12 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
                             <Plus size={11} color="var(--primary)" />
                             <span style={{ fontSize: 11, color: "var(--primary)" }}>填写实际动作</span>
                           </button>
+                        )}
+
+                        {r.skip_reason && (
+                          <p style={{ fontSize: 12, color: "var(--muted-foreground)", marginTop: 4 }}>
+                            原因：{skipReasonLabel(r.skip_reason)}
+                          </p>
                         )}
 
                         {r.pain_score !== undefined && (
@@ -283,10 +207,11 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
                     </div>
 
                     <div className="flex items-center gap-2 flex-shrink-0">
-                      <span style={{ fontSize: 12, color: statusColor(r.status), fontWeight: 500 }}>
-                        {statusLabel(r.status)}
+                      <span style={{ fontSize: 12, color: status.color, fontWeight: 500 }}>
+                        {status.label}
                       </span>
-                      {r.status === "completed" && (
+                      {r.source === "watch" && <span title="来自 Apple Watch">⌚</span>}
+                      {canEdit && (
                         <button
                           onClick={() => setEditingRecord(r)}
                           className="rounded-lg p-1.5 transition-opacity hover:opacity-80"
@@ -296,7 +221,7 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
                           <Pencil size={12} color="var(--muted-foreground)" />
                         </button>
                       )}
-                      {r.status === "skipped" && r.date === todayStr && (
+                      {(r.status === "skipped" || r.status === "snoozed") && r.date === today && (
                         <button
                           onClick={() => onDeleteRecord(r.id)}
                           className="rounded-lg px-2 py-1 transition-opacity hover:opacity-80"
@@ -310,7 +235,7 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
                   </div>
 
                   <p style={{ fontSize: 11, color: "var(--muted-foreground)", marginTop: 8, fontFamily: "'DM Mono', monospace" }}>
-                    {new Date(r.completed_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
+                    {new Date(r.completed_at ?? r.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
                   </p>
                 </div>
               );
@@ -322,8 +247,8 @@ export function HistoryView({ plan, records, dailyWellness, onUpdateRecord, onDe
       {editingRecord && (
         <RecordDetailEditor
           record={editingRecord}
-          taskTitle={getTask(editingRecord.task_id)?.title ?? editingRecord.task_id}
-          plannedExercises={getTask(editingRecord.task_id)?.exercises}
+          taskTitle={findTask(versions, editingRecord)?.task.title ?? "（已删除的任务）"}
+          initial={editorInitial(editingRecord)}
           onSave={(patch) => onUpdateRecord(editingRecord.id, patch)}
           onClose={() => setEditingRecord(null)}
         />

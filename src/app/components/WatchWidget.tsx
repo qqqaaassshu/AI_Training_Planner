@@ -1,13 +1,14 @@
 import { Play } from "lucide-react";
 import { WatchTrainingMode } from "./WatchTrainingMode";
-import type { PlanTask, ActualExercise } from "../types";
+import type { Exercise, PlanTask, SetLog } from "../types";
 
 interface WatchWidgetProps {
   remaining: number;
   total: number;
   trainingTask: PlanTask | null;
+  trainingExercises: Exercise[];
   onStartTraining: () => void;
-  onTrainingComplete: (actual: ActualExercise[], durationMinutes: number) => void;
+  onTrainingComplete: (sets: SetLog[], startedAt: string) => void;
   onExitTraining: () => void;
   notification: { title: string; taskId: string } | null;
   onDismissNotification: () => void;
@@ -18,6 +19,7 @@ export function WatchWidget({
   remaining,
   total,
   trainingTask,
+  trainingExercises,
   onStartTraining,
   onTrainingComplete,
   onExitTraining,
@@ -50,7 +52,9 @@ export function WatchWidget({
 
         {trainingTask ? (
           <WatchTrainingMode
+            key={trainingTask.id}
             task={trainingTask}
+            exercises={trainingExercises}
             onComplete={onTrainingComplete}
             onExit={onExitTraining}
           />
