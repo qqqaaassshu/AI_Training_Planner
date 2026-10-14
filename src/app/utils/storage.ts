@@ -95,3 +95,29 @@ export function saveApiKey(key: string): void {
     // ignore
   }
 }
+
+/** 训练中途的草稿（已勾选的动作与实际数值），按日期 + 任务保存，提交后清除 */
+export interface TaskDraft {
+  doneIds: string[];
+  items: { exercise_id: string; name: string; sets: number; reps?: number; duration_sec?: number; weight_kg?: number }[];
+}
+
+const draftKey = (date: string, taskId: string) => `atp:draft:${date}:${taskId}`;
+
+export function loadDraft(date: string, taskId: string): TaskDraft | null {
+  try {
+    const raw = storage()?.getItem(draftKey(date, taskId));
+    return raw ? (JSON.parse(raw) as TaskDraft) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDraft(date: string, taskId: string, draft: TaskDraft | null): void {
+  try {
+    if (draft && draft.doneIds.length > 0) storage()?.setItem(draftKey(date, taskId), JSON.stringify(draft));
+    else storage()?.removeItem(draftKey(date, taskId));
+  } catch {
+    // ignore
+  }
+}

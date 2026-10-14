@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Check, Plus, Trash2 } from "lucide-react";
 import type { Exercise, SetLog, SkipReason } from "../types";
 import { formatExerciseTarget, summarizeSets, type SetSummary } from "../utils/plan";
 import { formatDuration } from "../utils/date";
@@ -48,10 +48,13 @@ interface SetEditorProps {
   planned?: Exercise[];
   /** 允许改名 / 增删动作（补录时使用） */
   editable?: boolean;
+  /** 逐个动作打勾：已完成的动作 id */
+  doneIds?: string[];
+  onToggleDone?: (exerciseId: string) => void;
 }
 
 /** 按动作编辑实际完成的组数、次数或时长、重量 */
-export function SetEditor({ items, onChange, planned, editable }: SetEditorProps) {
+export function SetEditor({ items, onChange, planned, editable, doneIds, onToggleDone }: SetEditorProps) {
   const [newName, setNewName] = useState("");
   const set = (i: number, patch: Partial<SetSummary>) => onChange(items.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
 
@@ -65,9 +68,24 @@ export function SetEditor({ items, onChange, planned, editable }: SetEditorProps
       {items.map((it, i) => {
         const target = planned?.find((p) => p.id === it.exercise_id);
         const timed = it.duration_sec !== undefined;
+        const done = doneIds?.includes(it.exercise_id) ?? false;
         return (
-          <div key={it.exercise_id} className="rounded-xl p-3" style={{ background: "var(--secondary)" }}>
-            <div className="flex items-center justify-between gap-2 mb-2">
+          <div
+            key={it.exercise_id}
+            className="rounded-xl p-3 transition-all"
+            style={{ background: done ? "rgba(74,222,128,0.08)" : "var(--secondary)", border: `1px solid ${done ? "rgba(74,222,128,0.3)" : "transparent"}` }}
+          >
+            <div className="flex items-center justify-between gap-2" style={{ marginBottom: done ? 0 : 8 }}>
+              {onToggleDone && (
+                <button
+                  onClick={() => onToggleDone(it.exercise_id)}
+                  title={done ? "撤销完成" : "完成这个动作"}
+                  className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all"
+                  style={{ background: done ? "#4ade80" : "transparent", border: `1.5px solid ${done ? "#4ade80" : "#666"}` }}
+                >
+                  {done && <Check size={14} color="#000" strokeWidth={3} />}
+                </button>
+              )}
               {editable ? (
                 <input
                   value={it.name}
@@ -76,12 +94,24 @@ export function SetEditor({ items, onChange, planned, editable }: SetEditorProps
                   style={{ ...inputStyle, fontFamily: "inherit" }}
                 />
               ) : (
-                <span style={{ fontSize: 13, color: "var(--foreground)", fontWeight: 500 }}>{it.name}</span>
-              )}
-              {target && (
-                <span style={{ fontSize: 11, color: "var(--muted-foreground)", fontFamily: MONO }}>
-                  计划 {formatExerciseTarget(target)}
+                <span
+                  className="flex-1"
+                  style={{ fontSize: 13, color: done ? "var(--muted-foreground)" : "var(--foreground)", fontWeight: 500, textDecoration: done ? "line-through" : "none" }}
+                >
+                  {it.name}
                 </span>
+              )}
+              {done ? (
+                <span style={{ fontSize: 12, color: "#4ade80", fontFamily: MONO }}>
+                  {it.sets}×{timed ? formatDuration(it.duration_sec!) : it.reps}
+                  {it.weight_kg ? ` @${it.weight_kg}kg` : ""}
+                </span>
+              ) : (
+                target && (
+                  <span style={{ fontSize: 11, color: "var(--muted-foreground)", fontFamily: MONO }}>
+                    计划 {formatExerciseTarget(target)}
+                  </span>
+                )
               )}
               {editable && (
                 <button onClick={() => onChange(items.filter((_, idx) => idx !== i))} title="删除">
@@ -89,6 +119,10 @@ export function SetEditor({ items, onChange, planned, editable }: SetEditorProps
                 </button>
               )}
             </div>
+            {!done && target?.cue && (
+              <p style={{ fontSize: 11, color: "var(--muted-foreground)", marginBottom: 8 }}>💡 {target.cue}</p>
+            )}
+            {!done && (
             <div className="flex items-center gap-3 flex-wrap">
               <NumField label="组数" value={it.sets} onChange={(v) => set(i, { sets: v })} />
               {timed ? (
@@ -98,6 +132,7 @@ export function SetEditor({ items, onChange, planned, editable }: SetEditorProps
               )}
               <NumField label="kg" value={it.weight_kg} onChange={(v) => set(i, { weight_kg: v || undefined })} width={52} />
             </div>
+            )}
           </div>
         );
       })}
