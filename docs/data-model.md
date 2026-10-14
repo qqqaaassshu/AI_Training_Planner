@@ -92,9 +92,11 @@ AIAnalysis ── suggested_plan → 接受后生成新的 PlanVersion（source 
 | 文件 | 作用 |
 |---|---|
 | `utils/analysis.ts` | 构建分析输入、提示词（含两份 JSON Schema）、解析回复；`detectAlerts` 本地安全规则 |
-| `utils/ai/providers.ts` | 服务商适配层。目前接入 Anthropic（官方 SDK，默认 `claude-opus-5-5`，开启服务端拒绝时自动换模型重试）；新增服务商时实现 `AIProvider` 接口 |
+| `utils/ai/presets.ts` | 服务预设：Anthropic、OpenAI、DeepSeek、通义千问、Kimi、智谱、豆包、Ollama、自定义（OpenAI 兼容） |
+| `utils/ai/providers.ts` | 按接口格式调用：Anthropic 用官方 SDK（默认 `claude-opus-5-5`，开启服务端拒绝时自动换模型重试）；其他走 OpenAI 兼容 `/chat/completions`。统一处理超时、错误提示、测试连接 |
 | `utils/ai/run.ts` | 通过 API 运行一次分析并校验结果；手动分析和每周自动复盘共用 |
 
 - **隐私**：第一次通过 API 调用前需要用户同意；默认不发送文字备注，可单独勾选。
 - **本地安全规则**（`detectAlerts`，不依赖 AI）：近 7 天疼痛 ≥ 7 判为风险；连续两次疼痛 ≥ 5、因疼痛跳过 ≥ 2 次、跳过 ≥ 3 次、连续多日疲劳 ≥ 7 判为提醒。
+- **多服务配置**（`AISettings.services`）：可保存多个服务，选一个为当前服务。每个服务可设置名称、接口格式、接口地址、模型、最大输出、超时、温度、JSON 模式、额外请求头。API Key 按服务 id 单独保存，不随状态导出。旧版单服务设置会自动迁移。
 - **每周自动复盘**：需要开启开关、已同意数据上传、已配置 Key；距上次复盘满 7 天时，打开 App 会运行一次。

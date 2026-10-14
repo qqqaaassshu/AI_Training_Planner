@@ -4,7 +4,8 @@
  * API Key 单独存放，不随状态导出。原型里存在 localStorage 仅用于演示，
  * 正式 App 必须存入钥匙串（Keychain）。
  */
-import type { AIAnalysis, AISettings, DailyWellness, ExecutionRecord, PlanVersion } from "../types";
+import type { AIAnalysis, AIServiceConfig, AISettings, DailyWellness, ExecutionRecord, PlanVersion } from "../types";
+import { createServiceFromPreset } from "./ai/presets";
 import { SCHEMA_VERSION } from "../types";
 
 export interface PersistedState {
@@ -18,14 +19,42 @@ export interface PersistedState {
 }
 
 const STATE_KEY = "atp:state:v2";
-const API_KEY_KEY = "atp:ai-api-key";
+/** 旧版：单个 Key */
+const LEGACY_API_KEY_KEY = "atp:ai-api-key";
+/** 新版：按服务 id 保存 Key */
+const API_KEYS_KEY = "atp:ai-api-keys";
 
 export const DEFAULT_AI_SETTINGS: AISettings = {
-  provider: "anthropic",
-  model: "",
+  services: [],
+  active_service_id: null,
   consent_given: false,
   auto_weekly_review: false,
 };
+
+/** 兼容旧版设置 { provider, model, base_url } */
+function migrateAISettings(raw: unknown): AISettings {
+  const r = (raw ?? {}) as Partial<AISettings> & { provider?: string; model?: string; base_url?: string };
+  if (Array.isArray(r.services)) return { ...DEFAULT_AI_SETTINGS, ...r, services: r.services };
+  const settings: AISettings = {
+    ...DEFAULT_AI_SETTINGS,
+    consent_given: !!r.consent_given,
+    auto_weekly_review: !!r.auto_weekly_review,
+  };
+  if (r.provider) {
+    const service: AIServiceConfig = createServiceFromPreset(r.provider);
+    if (r.model) service.model = r.model;
+    if (r.base_url) service.base_url = r.base_url;
+    settings.services = [service];
+    settings.active_service_id = service.id;
+    // 旧 Key 归到这个服务下
+    const legacyKey = storage()?.getItem(LEGACY_API_KEY_KEY);
+    if (legacyKey) {
+      saveApiKeys({ ...loadApiKeys(), [service.id]: legacyKey });
+      storage()?.removeItem(LEGACY_API_KEY_KEY);
+    }
+  }
+  return settings;
+}
 
 export function emptyState(): PersistedState {
   return {
@@ -56,7 +85,7 @@ export function loadState(): PersistedState {
     return {
       ...base,
       ...parsed,
-      aiSettings: { ...base.aiSettings, ...parsed.aiSettings },
+      aiSettings: migrateAISettings(parsed.aiSettings),
     };
   } catch {
     return emptyState();
@@ -79,18 +108,20 @@ export function clearState(): void {
   }
 }
 
-export function loadApiKey(): string {
+export function loadApiKeys(): Record<string, string> {
   try {
-    return storage()?.getItem(API_KEY_KEY) ?? "";
+    const raw = storage()?.getItem(API_KEYS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, string>) : {};
   } catch {
-    return "";
+    return {};
   }
 }
 
-export function saveApiKey(key: string): void {
+export function saveApiKeys(keys: Record<string, string>): void {
   try {
-    if (key) storage()?.setItem(API_KEY_KEY, key);
-    else storage()?.removeItem(API_KEY_KEY);
+    const clean = Object.fromEntries(Object.entries(keys).filter(([, v]) => v));
+    if (Object.keys(clean).length > 0) storage()?.setItem(API_KEYS_KEY, JSON.stringify(clean));
+    else storage()?.removeItem(API_KEYS_KEY);
   } catch {
     // ignore
   }

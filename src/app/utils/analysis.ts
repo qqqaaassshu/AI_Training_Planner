@@ -214,7 +214,8 @@ export function buildManualPrompt(input: AnalysisInput): string {
 export function parseAnalysisReply(text: string): ValidationResult<AIAnalysisOutput> {
   let raw: unknown;
   try {
-    raw = extractJSON(text);
+    // 推理模型可能把思考过程放在 <think> 标签里
+    raw = extractJSON(text.replace(/<think>[\s\S]*?<\/think>/g, ""));
   } catch (e) {
     return { ok: false, errors: [e instanceof Error ? e.message : "未找到有效的 JSON"] };
   }

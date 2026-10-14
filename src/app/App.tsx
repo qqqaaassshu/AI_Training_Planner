@@ -11,7 +11,8 @@ import type { AIAnalysis, AISettings, ExecutionRecord, PlanTask, PlanVersion, Re
 import { createPlanVersion, findRecord, getExercisesForDate, getTasksOnDate, isDone, statusForSets } from "./utils/plan";
 import { daysBetween, todayStr } from "./utils/date";
 import { newId } from "./utils/id";
-import { loadApiKey, loadState, saveApiKey, saveState, type PersistedState } from "./utils/storage";
+import { loadApiKeys, loadState, saveApiKeys, saveState, type PersistedState } from "./utils/storage";
+import { getPreset, serviceProblems } from "./utils/ai/presets";
 import { buildAnalysisInput } from "./utils/analysis";
 import { runApiAnalysis } from "./utils/ai/run";
 import "../styles/fonts.css";
@@ -38,7 +39,7 @@ export default function App() {
   const [watchNotification, setWatchNotification] = useState<{ title: string; taskId: string } | null>(null);
   const [watchTrainingTask, setWatchTrainingTask] = useState<PlanTask | null>(null);
   const [today, setToday] = useState(todayStr);
-  const [apiKey, setApiKey] = useState(loadApiKey);
+  const [apiKeys, setApiKeys] = useState(loadApiKeys);
 
   const { planVersions, currentPlanId, records, dailyWellness, analyses, aiSettings } = state;
   const plan = planVersions.find((p) => p.id === currentPlanId) ?? null;
@@ -57,9 +58,9 @@ export default function App() {
     update((s) => ({ ...s, planVersions: [...s.planVersions, newPlan], currentPlanId: newPlan.id }));
   }
 
-  function handleApiKeyChange(key: string) {
-    setApiKey(key);
-    saveApiKey(key);
+  function handleApiKeysChange(keys: Record<string, string>) {
+    setApiKeys(keys);
+    saveApiKeys(keys);
   }
 
   function handleAISettings(aiSettings: AISettings) {
@@ -89,9 +90,14 @@ export default function App() {
     });
   }
 
-  // 每周自动复盘：距上次复盘满 7 天时运行一次（需开启、已同意、已配置 Key）
+  const activeService = aiSettings.services.find((x) => x.id === aiSettings.active_service_id);
+  const activeKey = activeService ? apiKeys[activeService.id] ?? "" : "";
+  const activeReady =
+    !!activeService && serviceProblems(activeService).length === 0 && (!!activeKey || !!getPreset(activeService.preset).key_optional);
+
+  // 每周自动复盘：距上次复盘满 7 天时运行一次（需开启、已同意、当前服务配置完整）
   useEffect(() => {
-    if (!plan || !apiKey || !aiSettings.auto_weekly_review || !aiSettings.consent_given) return;
+    if (!plan || !activeService || !activeReady || !aiSettings.auto_weekly_review || !aiSettings.consent_given) return;
     const last = analyses
       .filter((a) => a.kind === "weekly_review")
       .reduce<string | null>((m, a) => (!m || a.created_at > m ? a.created_at : m), null);
@@ -102,8 +108,8 @@ export default function App() {
     runApiAnalysis({
       input: buildAnalysisInput({ kind: "weekly_review", plan, versions: planVersions, records, dailyWellness, today }),
       planVersionId: plan.id,
-      settings: aiSettings,
-      apiKey,
+      service: activeService,
+      apiKey: activeKey,
       signal: controller.signal,
     })
       .then(handleAddAnalysis)
@@ -113,7 +119,7 @@ export default function App() {
     return () => controller.abort();
     // 只在日期、计划或开关变化时检查，避免每次记录变动都触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [today, plan?.id, apiKey, aiSettings.auto_weekly_review, aiSettings.consent_given]);
+  }, [today, plan?.id, activeService?.id, activeReady, aiSettings.auto_weekly_review, aiSettings.consent_given]);
 
   function handleSelectVersion(id: string) {
     update((s) => ({ ...s, currentPlanId: id }));
@@ -299,9 +305,9 @@ export default function App() {
                   today={today}
                   analyses={analyses}
                   settings={aiSettings}
-                  apiKey={apiKey}
+                  apiKeys={apiKeys}
                   onSettingsChange={handleAISettings}
-                  onApiKeyChange={handleApiKeyChange}
+                  onApiKeysChange={handleApiKeysChange}
                   onAddAnalysis={handleAddAnalysis}
                   onAcceptAnalysis={handleAcceptAnalysis}
                   onRejectAnalysis={(a) => setAnalysisStatus(a.id, "rejected")}

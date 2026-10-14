@@ -148,15 +148,39 @@ export interface AIAnalysis extends AIAnalysisOutput {
   channel: "api" | "manual_import";
   plan_version_id: string;
   range: { from: string; to: string };
+  /** 服务名称（API 调用时） */
   provider?: string;
   model?: string;
   status: "new" | "accepted" | "rejected";
 }
 
-export interface AISettings {
-  provider: string;
-  model: string;
+/** 接口格式：决定请求如何发送 */
+export type AIApiFormat = "anthropic" | "openai";
+
+/** 一个 AI 服务的配置（API Key 不在这里，单独保存） */
+export interface AIServiceConfig {
+  id: string;
+  /** 显示名称，如“DeepSeek”“公司代理” */
+  name: string;
+  /** 来自哪个预设（anthropic / openai / deepseek / … / custom） */
+  preset: string;
+  format: AIApiFormat;
+  /** 接口地址；留空用预设的默认地址 */
   base_url?: string;
+  model: string;
+  max_tokens: number;
+  /** 仅 OpenAI 兼容接口使用；留空用服务默认值 */
+  temperature?: number;
+  /** OpenAI 兼容接口：请求 JSON 输出（response_format） */
+  json_mode: boolean;
+  timeout_sec: number;
+  /** 额外请求头，如代理鉴权 */
+  extra_headers?: Record<string, string>;
+}
+
+export interface AISettings {
+  services: AIServiceConfig[];
+  active_service_id: string | null;
   consent_given: boolean;
   auto_weekly_review: boolean;
 }
